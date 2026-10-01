@@ -1,0 +1,204 @@
+---
+title: "Global State Variables and set_global_state()"
+sidebarTitle: "Global State"
+description: "Reference for SwapTube's built-in global state sensors — time, frame progress, voice, resolution — and the TransitionType enum and set_global_state()."
+---
+
+SwapTube maintains a single process-wide key-value store called the **global state** — a flat `unordered_map<string, double>` that holds universal sensors updated automatically by the rendering engine on every frame. Any `StateManager` equation can read from the global state by wrapping a key in curly braces, e.g. `{t}` or `{microblock_fraction}`. These references are resolved at evaluation time by calling `get_global_state(key)`, so the values are always current for the frame being rendered. Global state keys can also be written by scene code via `set_global_state`, enabling one scene to publish computed values that other scenes can then consume as `{key}` references in their own equations.
+
+---
+
+## TransitionType
+
+`TransitionType` is a simple enum that determines which time unit a `StateManager::transition` call spans. It is declared in `TransitionType.h` and accepted by every `transition` and `close_transitions` overload.
+
+```cpp
+enum TransitionType {
+    MICRO,
+    MACRO
+};
+```
+
+<ResponseField name="MICRO" type="enum value">
+  The transition runs over one **microblock** — the finest time unit in SwapTube's two-layer time system. A microblock corresponds to a single `render_microblock()` call. The interpolation parameter used internally is `{microblock_fraction}`, which sweeps 0.0 → 1.0 across the frames that belong to that microblock.
+</ResponseField>
+
+<ResponseField name="MACRO" type="enum value">
+  The transition runs over one **macroblock** — the coarser time unit, typically corresponding to one sentence of narration audio. The interpolation parameter used internally is `{macroblock_fraction}`, which sweeps 0.0 → 1.0 across all frames of the staged macroblock.
+</ResponseField>
+
+<Tip>
+  Use `MICRO` for tight visual snaps between microblocks (e.g., a camera cut within a narration sentence) and `MACRO` for gradual animations that should span the full duration of a spoken sentence.
+</Tip>
+
+<Note>
+  Both transition types use smoothstep easing by default (`smooth = true`). Pass `smooth = false` to `transition()` to switch to linear interpolation for either type.
+</Note>
+
+---
+
+## Built-in Global Variables
+
+The following variables are pre-populated in the global state table at process start and updated automatically by the SwapTube engine. All of them are readable in any `StateManager` equation using `{name}` syntax.
+
+<ResponseField name="{microblock_fraction}" type="double — range [0.0, 1.0]">
+  Progress through the **currently rendering microblock**, expressed as a fraction from `0.0` at the first frame to `1.0` at the last frame of the microblock. This is the interpolation parameter used by `MICRO` transitions. It is the most commonly used global variable in equation-driven animations.
+
+  ```cpp
+  // Opacity that fades in over the microblock
+  ms.manager.set("opacity", "{microblock_fraction}");
+
+  // Custom eased approach to target value
+  ms.manager.set("zoom", "0.1 2.0 {microblock_fraction} smoothlerp");
+  ```
+</ResponseField>
+
+<ResponseField name="{macroblock_fraction}" type="double — range [0.0, 1.0]">
+  Progress through the **currently rendering macroblock**, expressed as a fraction from `0.0` at the macroblock's first frame to `1.0` at its last frame. Used as the interpolation parameter by `MACRO` transitions. Suitable for slow, sentence-spanning animations.
+
+  ```cpp
+  // Rotate slowly over the full macroblock
+  ms.manager.set("angle", "{macroblock_fraction} pi *");
+  ```
+</ResponseField>
+
+<ResponseField name="{t}" type="double — seconds elapsed">
+  Elapsed video time in **seconds** from the start of the render. Useful for continuous, time-driven motion that is independent of block boundaries — oscillations, drift, procedural motion, etc.
+
+  ```cpp
+  // Persistent oscillation unrelated to block structure
+  ms->manager.transition(MICRO, "w", "{t} 3 * sin .3 * .5 +");
+  ms->manager.transition(MICRO, "h", "{t} 5 * cos .3 * .5 +");
+  ```
+</ResponseField>
+
+<ResponseField name="{VIDEO_WIDTH}" type="double — pixels">
+  The **render width** in pixels, as specified on the command line (e.g. `1920`). Set once at startup via `set_global_state("VIDEO_WIDTH", w)` and never changed thereafter. Use this to write resolution-independent equations.
+
+  ```cpp
+  // Compute a scene-space width proportional to video resolution
+  scene.manager.set("window_width",
+      "<window_height> <w> {VIDEO_WIDTH} * / <h> {VIDEO_HEIGHT} * *");
+  ```
+</ResponseField>
+
+<ResponseField name="{VIDEO_HEIGHT}" type="double — pixels">
+  The **render height** in pixels, as specified on the command line (e.g. `1080`). Set alongside `{VIDEO_WIDTH}` at startup. Primarily used for aspect-ratio calculations.
+</ResponseField>
+
+<ResponseField name="{frame_number}" type="double — integer-valued">
+  The absolute **frame index** from the beginning of the render, starting at `0`. Increments by one for every rendered frame. Useful for step-function logic or discrete counters expressed in equations.
+
+  ```cpp
+  // Something that changes every 30 frames (at 30 fps = every second)
+  scene.manager.set("phase", "{frame_number} 30 % 30 /");
+  ```
+</ResponseField>
+
+<ResponseField name="{macroblock_number}" type="double — integer-valued">
+  The **index of the current macroblock**, starting at `0` and incrementing each time a new macroblock begins. Useful for selecting between visual states based on which narration sentence is playing.
+</ResponseField>
+
+<ResponseField name="{microblock_number}" type="double — integer-valued">
+  The **index of the current microblock** within the current macroblock, starting at `0`. Increments with each `render_microblock()` call. Reset to `0` at the start of each new macroblock.
+</ResponseField>
+
+<ResponseField name="{voice}" type="double — range [0.0, ~1.0]">
+  The **instantaneous voice loudness** for the current frame, measured as the maximum left-channel audio sample amplitude as a float. This is `0` when no narration is playing (e.g. during `SilenceBlock`). Use it to create visuals that react to narration volume.
+
+  ```cpp
+  // Scale a visual element's size with voice loudness
+  scene.manager.set("pulse_scale", "{voice} 2 * 1 +");
+  ```
+</ResponseField>
+
+---
+
+## `set_global_state`
+
+Writes a value into the global state table. Creates the entry if it does not already exist, or overwrites it if it does. This function is available to any C++ translation unit that includes `GlobalState.h`.
+
+```cpp
+void set_global_state(const string& key, double value);
+```
+
+<ParamField path="key" type="string" required>
+  The global state key to write. Any string is accepted; the key is created on first write. Once created, the value is immediately visible to all `StateManager` equations that reference `{key}` on the same or any subsequent frame.
+</ParamField>
+
+<ParamField path="value" type="double" required>
+  The numeric value to store.
+</ParamField>
+
+<Note>
+  `set_global_state` is used internally by the SwapTube engine to update `{t}`, `{frame_number}`, `{microblock_fraction}`, `{macroblock_fraction}`, and `{voice}` on every frame. You should not overwrite these engine-managed keys from project code, as doing so will corrupt the timing model.
+</Note>
+
+Scene code commonly uses `set_global_state` to **publish computed results** from one scene so that sibling or parent scenes can consume them as equation inputs. Because the render order between independent scenes within a `CompositeScene` is not guaranteed, a value published in the *current* frame is reliably readable by all scenes on the *next* frame:
+
+```cpp
+// In a scene's draw() or change_data() method — publish to global
+set_global_state("billiards_ball_x", ball_pos.x);
+set_global_state("billiards_ball_y", ball_pos.y);
+```
+
+```cpp
+// In another scene's StateManager — consume from global
+other_scene.manager.set("indicator_x", "{billiards_ball_x}");
+other_scene.manager.set("indicator_y", "{billiards_ball_y}");
+```
+
+<Warning>
+  Accessing a global key that does not yet exist returns `0.0` on the very first frame (when `{microblock_fraction} == 0`). On any subsequent frame, accessing a nonexistent key throws `runtime_error: global state access failed on element <key>`. This zero-default behavior is intentional and handles the initialization race between scenes, but you should ensure publishing scenes run before consuming scenes after the first frame.
+</Warning>
+
+---
+
+## Additional Global State Functions
+
+These companion free functions in `GlobalState.h` round out the global state API:
+
+<ResponseField name="get_global_state(key)" type="double">
+  Reads a value from the global state table. Returns `0.0` on the first frame if the key is absent; throws on later frames.
+
+  ```cpp
+  double current_time = get_global_state("t");
+  ```
+</ResponseField>
+
+<ResponseField name="global_state_exists(key)" type="bool">
+  Returns `true` if the given key is present in the global state table. Does not create the entry.
+
+  ```cpp
+  if (global_state_exists("billiards_ball_x")) {
+      // safe to read
+  }
+  ```
+</ResponseField>
+
+<ResponseField name="get_all_global_state()" type="const unordered_map<string, double>&">
+  Returns a const reference to the entire global state map. Useful for debugging, serialization, or iterating over all published keys.
+
+  ```cpp
+  for (const auto& [key, val] : get_all_global_state()) {
+      cout << key << " = " << val << "\n";
+  }
+  ```
+</ResponseField>
+
+---
+
+## Equation Quick-Reference
+
+The table below shows the most commonly used global variable combinations in real SwapTube project files:
+
+| Goal | Example Equation |
+|---|---|
+| Fade in over microblock | `"{microblock_fraction}"` |
+| Smooth fade in over microblock | `"0 1 {microblock_fraction} smoothlerp"` |
+| Oscillate with video time | `"{t} sin .5 * .5 +"` |
+| Oscillate at a custom frequency | `"{t} 3 * cos .3 * .5 +"` |
+| Lerp position over macroblock | `"0.1 0.9 {macroblock_fraction} lerp"` |
+| Scale with voice loudness | `"{voice} 2 * 1 +"` |
+| Aspect-ratio-aware width | `"<h> {VIDEO_WIDTH} * {VIDEO_HEIGHT} /"` |
+| Discrete step every N frames | `"{frame_number} 30 % 30 /"` |

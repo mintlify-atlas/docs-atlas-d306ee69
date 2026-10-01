@@ -1,0 +1,251 @@
+---
+title: "How to Install SwapTube and All of Its Dependencies"
+sidebarTitle: "Installation"
+description: "Install SwapTube on Linux, WSL2, or Docker — apt packages, CUDA or HIP toolkit, MicroTeX build, and final verification with the test.sh smoketest suite."
+---
+
+SwapTube has no single-command installer — it is a C++ project you clone and build locally. The installation process installs system packages for FFmpeg, Cairo, RSVG, and PNG handling; builds MicroTeX for in-video LaTeX rendering; and confirms everything works by running the smoketest suite. The steps below cover all three supported environments.
+
+<Tabs>
+  <Tab title="Linux (Native)">
+    <Steps>
+      <Step title="Clone the repository">
+        Clone SwapTube into your home directory. MicroTeX must be installed as a **sibling** directory named `MicroTeX-master`, so choose a parent folder that will hold both.
+
+        ```bash
+        git clone https://github.com/2swap/swaptube.git ~/swaptube
+        cd ~/swaptube
+        ```
+      </Step>
+
+      <Step title="Install system dependencies">
+        Install all required packages with a single `apt` command. See the [dependency table](#dependency-reference) below for details on what each package provides.
+
+        ```bash
+        sudo apt update && sudo apt install -y \
+            cmake ninja-build \
+            ffmpeg \
+            libswscale-dev libavcodec-dev libavformat-dev \
+            libavdevice-dev libavutil-dev libavfilter-dev \
+            gnuplot \
+            librsvg2-dev libglib2.0-dev \
+            libcairo2-dev \
+            libpng-dev \
+            pkg-config g++
+        ```
+
+        <Note>
+          Install a **precompiled FFmpeg binary** (the `ffmpeg` apt package) rather than building from source. A source build picks up extra system libraries that are not included in the project's CMake config and will produce linker errors.
+        </Note>
+      </Step>
+
+      <Step title="Install your GPU compute toolkit">
+        SwapTube requires a CUDA-compatible NVIDIA GPU **or** a HIP-compatible AMD GPU. Install the appropriate toolkit for your hardware:
+
+        <CodeGroup>
+          ```bash NVIDIA (CUDA)
+          # Install the CUDA toolkit from your distribution's package manager
+          # or from https://developer.nvidia.com/cuda-downloads
+          sudo apt install -y nvidia-cuda-toolkit
+          ```
+
+          ```bash AMD (HIP/ROCm)
+          # Follow the ROCm quick-start guide for your distro:
+          # https://rocm.docs.amd.com/projects/install-on-linux/en/latest/install/quick-start.html
+          ```
+        </CodeGroup>
+
+        Verify GPU access before continuing:
+
+        ```bash
+        nvidia-smi        # NVIDIA
+        rocm-smi          # AMD
+        ```
+      </Step>
+
+      <Step title="Build MicroTeX">
+        MicroTeX is required for the `LatexScene`. The first time you run `go.sh` it will detect a missing MicroTeX build and offer to clone and compile it automatically. You can also trigger this manually:
+
+        ```bash
+        cd ~/swaptube
+        ./go.sh LatexDemo 640 360 30 -s
+        # When prompted: "Would you like to automatically re-install MicroTeX now? [y/N]"
+        # Type y and press Enter.
+        ```
+
+        SwapTube clones `https://github.com/NanoMichael/MicroTeX.git` into `../MicroTeX-master` and runs `cmake` + `make -j$(nproc)`. Afterwards, confirm the binary exists:
+
+        ```bash
+        ls -lh ~/MicroTeX-master/build/LaTeX
+        ```
+
+        <Warning>
+          If `gtksourceviewmm-3.0` is unavailable in your distro's package manager, build it from source. Instructions are linked in the error output from `go.sh`, and also in [this GitHub comment](https://github.com/end-4/dots-hyprland/issues/955#issuecomment-2486579754).
+        </Warning>
+      </Step>
+
+      <Step title="Verify the build with test.sh">
+        Run the full demo smoketest suite to confirm every dependency is wired up correctly:
+
+        ```bash
+        cd ~/swaptube
+        ./test.sh
+        ```
+
+        A passing run ends with:
+
+        ```
+        ====================================================
+        SUMMARY
+        ====================================================
+        Passed: 31
+        Failed: 0
+        All smoketests passed!
+        ```
+
+        Each demo in `src/Projects/Demos/` is compiled and smoketested at 160×90. No video files are written.
+      </Step>
+    </Steps>
+  </Tab>
+
+  <Tab title="WSL2 (Windows)">
+    <Steps>
+      <Step title="Install WSL2 with Ubuntu">
+        Open an **elevated PowerShell** and run:
+
+        ```powershell
+        wsl --install -d Ubuntu
+        ```
+
+        Reboot when prompted. This installs WSL2 and an Ubuntu distribution.
+      </Step>
+
+      <Step title="Install dependencies inside Ubuntu">
+        Open your Ubuntu shell and run:
+
+        ```bash
+        sudo apt update && sudo apt install -y \
+            cmake ninja-build gnuplot ffmpeg pkg-config g++ \
+            libswscale-dev libavcodec-dev libavformat-dev libavdevice-dev \
+            libavutil-dev libavfilter-dev libswresample-dev \
+            librsvg2-dev libglib2.0-dev libcairo2-dev libpng-dev \
+            libgdk-pixbuf-2.0-dev \
+            nvidia-cuda-toolkit mpv
+        ```
+
+        <Warning>
+          Install **only** the CUDA *toolkit* package. WSL2 inherits GPU access from the Windows NVIDIA driver through `/usr/lib/wsl/lib`. Installing a Linux driver package inside the distro breaks that bridge. Confirm your GPU is visible with `nvidia-smi` before continuing.
+        </Warning>
+      </Step>
+
+      <Step title="Clone into the Linux filesystem">
+        Clone into your Linux home directory, **not** into `/mnt/c/` or any other Windows-mounted path. Small-file I/O across the WSL/Windows boundary is roughly 75× slower, and SwapTube writes one PNG per frame during rendering.
+
+        ```bash
+        git clone https://github.com/2swap/swaptube.git ~/swaptube
+        cd ~/swaptube
+        ```
+      </Step>
+
+      <Step title="Build MicroTeX">
+        The first `go.sh` run that needs MicroTeX will offer to clone and build it automatically. Accept the prompt:
+
+        ```bash
+        ./go.sh MandelbrotDemo 640 360 30 -s
+        # Type y when prompted for MicroTeX installation
+        ```
+      </Step>
+
+      <Step title="Run a demo to verify">
+        ```bash
+        ./go.sh MandelbrotDemo 1920 1080 30
+        ```
+
+        The smoketest runs first at 320×180, then the full render begins at 1080p. The finished video plays back automatically via `mpv`.
+
+        <Tip>
+          If a large render runs out of memory, create `C:\Users\<you>\.wslconfig` with the following content and restart WSL (`wsl --shutdown`):
+
+          ```ini
+          [wsl2]
+          memory=16GB
+          ```
+
+          WSL2 defaults to half your system RAM.
+        </Tip>
+      </Step>
+    </Steps>
+  </Tab>
+
+  <Tab title="Docker">
+    <Steps>
+      <Step title="Prerequisites">
+        You need Docker with the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html) installed on the host. The Dockerfile is based on `nvidia/cuda:12.6.0-devel-ubuntu24.04` and requires `--gpus all` at runtime.
+      </Step>
+
+      <Step title="Build the image">
+        Build from the repository root so the Dockerfile can copy the checkout:
+
+        ```bash
+        git clone https://github.com/2swap/swaptube.git ~/swaptube
+        cd ~/swaptube
+        docker build -f docker/Dockerfile -t swaptube .
+        ```
+
+        The build installs all apt dependencies and compiles MicroTeX (using the Qt backend) inside the image.
+      </Step>
+
+      <Step title="Run a container">
+        Mount `media/` and `out/` as volumes so your renders and assets persist outside the container:
+
+        ```bash
+        docker run --gpus all \
+            -v ~/swaptube/media:/workspace/media \
+            -v ~/swaptube/out:/workspace/out \
+            -it swaptube
+        ```
+
+        Inside the container, run projects the same way as on bare metal:
+
+        ```bash
+        ./go.sh MandelbrotDemo 1920 1080 30
+        ```
+      </Step>
+
+      <Step title="Further reference">
+        The Docker setup is community-maintained. See `docker/README.md` in the repository for additional options, including UID/GID overrides and optional pre-built binary layers.
+
+        <Note>
+          The Docker setup is not maintained by 2swap. For issues specific to the container, open a report in the repository referencing the `docker/` directory.
+        </Note>
+      </Step>
+    </Steps>
+  </Tab>
+</Tabs>
+
+## Dependency Reference
+
+The table below lists every external package, what SwapTube uses it for, and the Ubuntu/Debian install command.
+
+| Package | Purpose | Install Command |
+|---|---|---|
+| `cmake`, `ninja-build` | Build system — compiles the entire project | `sudo apt install cmake ninja-build` |
+| `ffmpeg` | Video/audio encoding binary (runtime) | `sudo apt install ffmpeg` |
+| `libswscale-dev` | FFmpeg pixel-format conversion | included in FFmpeg dev block |
+| `libavcodec-dev` | FFmpeg codec library | included in FFmpeg dev block |
+| `libavformat-dev` | FFmpeg container muxing | included in FFmpeg dev block |
+| `libavdevice-dev` | FFmpeg device I/O | included in FFmpeg dev block |
+| `libavutil-dev` | FFmpeg utility functions | included in FFmpeg dev block |
+| `libavfilter-dev` | FFmpeg filter graph | included in FFmpeg dev block |
+| `gnuplot` | Generates debug plots from data in `out/` | `sudo apt install gnuplot` |
+| `librsvg2-dev` | Renders SVG files produced by MicroTeX | `sudo apt install librsvg2-dev libglib2.0-dev` |
+| `libglib2.0-dev` | GLib support for RSVG | included with RSVG block |
+| `libcairo2-dev` | Rasterises SVG onto Cairo surfaces | `sudo apt install libcairo2-dev` |
+| `libpng-dev` | Reads PNG source images | `sudo apt install libpng-dev` |
+| CUDA toolkit | GPU kernel compilation (NVIDIA) | `sudo apt install nvidia-cuda-toolkit` |
+| HIP/ROCm | GPU kernel compilation (AMD) | [ROCm quick-start guide](https://rocm.docs.amd.com/projects/install-on-linux/en/latest/install/quick-start.html) |
+| MicroTeX | Converts LaTeX expressions to SVG for `LatexScene` | Built from source — `go.sh` automates this |
+
+<Note>
+  The `libswresample-dev` package is required on some distributions (notably WSL2/Ubuntu) but is pulled in automatically by the other FFmpeg dev packages on most systems. If you see a `pkg-config` error about `libswresample`, install it explicitly: `sudo apt install libswresample-dev`.
+</Note>

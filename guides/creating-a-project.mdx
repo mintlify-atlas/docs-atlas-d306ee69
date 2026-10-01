@@ -1,0 +1,229 @@
+---
+title: "How to Create a New SwapTube Project and Render It"
+sidebarTitle: "Creating a Project"
+description: "Step-by-step guide to building a SwapTube project: file layout, render_video(), scene setup, the macroblock/microblock loop, and building with go.sh."
+---
+
+Every SwapTube video begins as a single C++ source file. You define what the video contains — which scenes appear, how they animate, and what audio plays — entirely inside a `render_video()` function, and `go.sh` handles compilation, smoketesting, and encoding for you. This guide walks from an empty file to a rendered video, explaining each concept as it appears.
+
+## Project file location
+
+SwapTube's build system discovers your project by searching for a `.cpp` file anywhere under `src/Projects/`. The most common layout is a flat file directly in that directory:
+
+```
+src/Projects/MyProject.cpp
+```
+
+You can also nest projects in subdirectories (the `Demos/` folder is an example), but the filename without its extension is what you pass to `go.sh`, so names must be unique across the whole tree.
+
+## The required entry point
+
+Every project file must define exactly one free function with this signature:
+
+```cpp
+void render_video();
+```
+
+There are no arguments and no return value. SwapTube calls `render_video()` twice per `go.sh` run — once during the mandatory smoketest and once for the full render — so the function must be deterministic and free of side effects that would break on a second execution.
+
+## Choosing and including scenes
+
+Scenes live under `src/Scenes/` and are organised into subdirectories by category:
+
+| Subdirectory | Examples |
+|---|---|
+| `Scenes/Common/` | `CompositeScene`, `CoordinateScene`, `BackgroundScene` |
+| `Scenes/Math/` | `MandelbrotScene`, `LatexScene` (via `Scenes/Media/`), `FractalScene` |
+| `Scenes/Media/` | `LatexScene`, `PngScene`, `Mp4Scene` |
+| `Scenes/Physics/` | `PendulumScene`, `RopeScene` |
+
+Include the header for the scene you want and declare an instance at the top of `render_video()`. Multiple scenes are included with multiple `#include` directives:
+
+```cpp
+#include "../Scenes/Math/MandelbrotScene.h"
+#include "../Scenes/Common/CompositeScene.h"
+```
+
+The path is relative to the location `go.sh` copies your file to (`src/Projects/.active_project.cpp`), so `../Scenes/` always reaches the scenes directory regardless of where your original file lives.
+
+## The macroblock / microblock render loop
+
+SwapTube organises time in two layers.
+
+**Macroblocks** are atomic units of audio — typically one sentence of narration or a fixed duration of silence. You *stage* a macroblock globally before rendering any visual frames for it:
+
+```cpp
+stage_macroblock(SilenceBlock(3));   // 3 seconds of silence
+```
+
+**Microblocks** are visual time units. After staging a macroblock, you call `render_microblock()` on a scene once for each visual segment that belongs to that macroblock. The simplest case is one microblock per macroblock:
+
+```cpp
+stage_macroblock(SilenceBlock(3));
+myScene.render_microblock();
+```
+
+A more complex macroblock can span several microblocks, letting you sequence animations within a single sentence of narration:
+
+```cpp
+stage_macroblock(SilenceBlock(4), 2);      // tell SwapTube to expect 2 microblocks
+myScene.render_microblock();               // first visual segment
+myScene.manager.transition(MICRO, "zoom", "1");
+myScene.render_microblock();               // second visual segment with a zoom transition
+```
+
+The optional second argument to `stage_macroblock` overrides the microblock count that the smoketest measured. Use it whenever a macroblock's visual content differs deliberately between the smoketest and the full render.
+
+<Note>
+SwapTube counts every `render_microblock()` call during the smoketest and records those counts in `out/ProjectName/timestamp/microblock_counts.txt`. The full render reads that file and stops if the counts do not match. Project control flow must therefore be identical between the two runs.
+</Note>
+
+## Animating state with the StateManager
+
+Every scene exposes a `manager` member of type `StateManager`. Use `set` to assign an immediate value and `transition` to animate a value across the duration of the current microblock or macroblock:
+
+```cpp
+myScene.manager.set("zoom", "0.2");                     // set immediately
+myScene.manager.transition(MICRO, "zoom", "1");         // animate over this microblock
+myScene.manager.transition(MACRO, "opacity", "0");      // animate over the whole macroblock
+```
+
+`MICRO` and `MACRO` are values of the `TransitionType` enum. State equations are written in Reverse Polish Notation and can reference built-in global variables such as `{microblock_fraction}` (0 → 1 over the microblock) and `{t}` (seconds elapsed in the video).
+
+You can also transition a batch of variables in one call:
+
+```cpp
+myScene.manager.transition(MICRO, {
+    {"pixel_param_z", "1"},
+    {"pixel_param_c", "0"},
+    {"seed_c_r",      "0.4"},
+    {"seed_c_i",      "0.1"},
+});
+```
+
+## Skipping sections with `set_for_real`
+
+While working on a later part of a long project you can skip encoding earlier sections without removing their code. `set_for_real(false)` keeps executing project logic (so macroblock and microblock counts remain consistent) but skips frame drawing and audio encoding. Call `set_for_real(true)` before the section you want to render:
+
+```cpp
+set_for_real(false);
+// All of this runs during the smoketest but is not encoded.
+stage_macroblock(SilenceBlock(10));
+myScene.render_microblock();
+
+set_for_real(true);
+// Everything from here onward is encoded normally.
+stage_macroblock(SilenceBlock(5));
+myScene.render_microblock();
+```
+
+<Warning>
+`set_for_real` is a development shortcut. Remove or reverse it before your final render, otherwise the skipped sections will not appear in the output video.
+</Warning>
+
+## A complete worked example
+
+The following project file builds up from scratch to a short animated Mandelbrot video. It demonstrates includes, scene instantiation, state manipulation, and the two-layer timing system:
+
+```cpp
+#include "../Scenes/Math/MandelbrotScene.h"
+
+void render_video() {
+    // Instantiate the scene. Dimensions default to the full output resolution.
+    MandelbrotScene ms;
+
+    // Set the initial zoom before any frame is rendered.
+    ms.manager.set("zoom", ".2");
+
+    // Transition several state variables at once.
+    ms.manager.transition(MICRO, {
+        {"pixel_param_z", "1"},
+        {"pixel_param_c", "0"},
+        {"seed_c_r",      ".4"},
+        {"seed_c_i",      ".1"},
+    });
+
+    // Stage a 4-second silent macroblock with 2 microblocks.
+    stage_macroblock(SilenceBlock(4), 2);
+    ms.render_microblock();   // first visual segment — state transitions applied above play out here
+
+    // Set up the second microblock's animation.
+    ms.manager.transition(MICRO, "zoom", "1");
+    ms.render_microblock();   // second visual segment — zoom animates from .2 to 1
+}
+```
+
+Save this as `src/Projects/MandelbrotDemo.cpp` and build it:
+
+```bash
+./go.sh MandelbrotDemo 1920 1080 30
+```
+
+## Building and output structure
+
+<Steps>
+  <Step title="Run go.sh">
+    ```bash
+    ./go.sh <ProjectName> <width> <height> <framerate>
+    ```
+    `go.sh` checks that `cmake`, `ninja`, `gnuplot`, and MicroTeX are present, then compiles and runs the project.
+  </Step>
+  <Step title="Smoketest">
+    SwapTube runs your project at 320×180 first. One frame per microblock is rendered and the microblock counts are written to disk. No video or audio is encoded at this stage.
+  </Step>
+  <Step title="Full render">
+    The project runs again at the requested resolution. Each call to `render_microblock()` renders all frames for that microblock, and audio is encoded alongside video.
+  </Step>
+  <Step title="Playback">
+    After a successful render `go.sh` calls `play.sh` automatically. You can replay the most recent render at any time with:
+    ```bash
+    ./play.sh MyProject
+    ```
+  </Step>
+</Steps>
+
+Output files land in a timestamped subdirectory:
+
+```
+out/
+└── MyProject/
+    └── 2025-01-15_14.32.07/
+        ├── Video.mkv              # encoded video
+        ├── microblock_counts.txt  # written by the smoketest
+        └── MyProject.cpp          # copy of the source file used for this render
+```
+
+<Tip>
+Add `-s` to run only the smoketest and skip the full render:
+
+```bash
+./go.sh MyProject 1920 1080 30 -s
+```
+
+This is useful for quickly validating new macroblock sequences or refreshing `record_list.tsv` without waiting for a full encode.
+</Tip>
+
+## Adding a second scene
+
+Projects routinely use `CompositeScene` to layer or place multiple scenes in the same frame. Include both headers, create a `CompositeScene`, and add child scenes as shared pointers:
+
+```cpp
+#include "../Scenes/Common/CompositeScene.h"
+#include "../Scenes/Math/MandelbrotScene.h"
+
+void render_video() {
+    CompositeScene cs;
+
+    shared_ptr<MandelbrotScene> ms = make_shared<MandelbrotScene>();
+    cs.add_scene(ms, "ms");   // "ms" becomes the key prefix in the composite's state
+
+    stage_macroblock(SilenceBlock(5), 5);
+    cs.render_microblock();
+
+    ms->manager.transition(MICRO, "w", "{t} 3 * sin .3 * .5 +");
+    ms->manager.transition(MICRO, "h", "{t} 5 * cos .3 * .5 +");
+    cs.render_microblock();
+}
+```
+
+Child scene position and size are controlled through `CompositeScene`'s state manager using the key prefix you assigned (`ms.x`, `ms.y`, `ms.angle`, etc.).

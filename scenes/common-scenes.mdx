@@ -1,0 +1,253 @@
+---
+title: "Common Scenes: Compositing, 3-D, Coordinates, Background"
+sidebarTitle: "Common Scenes"
+description: "Deep-dive into CompositeScene, ThreeDimensionScene, CoordinateScene, and BackgroundScene — the structural layer every SwapTube project is built on."
+---
+
+The four scenes in `src/Scenes/Common/` are not visualisations themselves — they are **structural primitives** that all other scenes are composed from or layered inside. `CompositeScene` is your canvas for multi-scene layouts; `ThreeDimensionScene` provides the 3-D camera; `CoordinateScene` manages the 2-D mathematical viewport; and `BackgroundScene` fills the frame with a smooth gradient. Every non-trivial SwapTube project uses at least one of these.
+
+---
+
+## `CompositeScene`
+
+**Header:** `src/Scenes/Common/CompositeScene.h`  
+**Inherits:** `SuperScene → Scene`
+
+`CompositeScene` is the main tool for overlaying multiple scenes in a single frame. Each child scene is given a unique string name and positioned on the parent canvas via that name's state variables. The GPU CUDA kernel `cuda_overlay` composites each child in `render_order` every frame.
+
+### Adding Child Scenes
+
+```cpp
+// Place a child at the default center (0.5, 0.5) with full opacity
+void add_scene(
+    shared_ptr<Scene> sc,
+    const string& state_name,
+    const vec2& pos = vec2(.5, .5),
+    bool behind = false,
+    int insert_position = -1
+);
+
+// Place a child and fade it in over the given transition
+void add_scene_fade_in(
+    const TransitionType tt,
+    shared_ptr<Scene> sc,
+    const string& state_name,
+    const vec2& pos = vec2(.5, .5),
+    double opa = 1,
+    bool behind = false,
+    int insert_position = -1
+);
+```
+
+The `state_name` string becomes the prefix for all of that child's layout variables on the parent's `StateManager`. After calling `add_scene("ms", ...)`, the following variables are live on `cs.manager`:
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `ms.x` | `0.5` | Horizontal center as a fraction of parent width |
+| `ms.y` | `0.5` | Vertical center as a fraction of parent height |
+| `ms.angle` | `0` | Rotation angle in radians |
+| `ms.opacity` | `1` | Opacity (0 = invisible, 1 = fully opaque) |
+
+All four variables are fully animatable via `cs.manager.transition(...)`.
+
+### Sliding a Child
+
+```cpp
+void slide_subscene(const TransitionType tt, const string& name, const vec2& delta);
+```
+
+`slide_subscene` adds `delta.x` and `delta.y` to the child's current `x`/`y` equations in a single transition, creating a smooth directional slide.
+
+### Inherited `SuperScene` Methods
+
+`CompositeScene` inherits the full `SuperScene` subscene-management API:
+
+```cpp
+void fade_subscene(TransitionType tt, const string& name, double opacity_final);
+void fade_all_subscenes(TransitionType tt, double opacity);
+void fade_all_subscenes_except(TransitionType tt, const string& name, double opacity);
+void remove_subscene(const string& name);
+void remove_all_subscenes();
+void move_to_front(const string& name);
+void move_to_back(const string& name);
+shared_ptr<Scene> get_subscene_pointer(const string& name);
+```
+
+### Worked Example — `CompositeDemo`
+
+The following is the complete `CompositeDemo.cpp` from the source repository, showing a `MandelbrotScene` being added to a `CompositeScene` and then animated across position, size, and rotation:
+
+```cpp
+#include "Scenes/Common/CompositeScene.h"
+#include "Scenes/Math/MandelbrotScene.h"
+
+void render_video() {
+    CompositeScene cs;
+    stage_macroblock(SilenceBlock(5), 5);
+
+    shared_ptr<MandelbrotScene> ms = make_shared<MandelbrotScene>();
+    cs.add_scene(ms, "ms");
+
+    // Microblock 1: static frame
+    cs.render_microblock();
+
+    // Microblock 2: animate child's own w/h using a sine wave
+    ms->manager.transition(MICRO, "w", "{t} 3 * sin .3 * .5 +");
+    ms->manager.transition(MICRO, "h", "{t} 5 * cos .3 * .5 +");
+    cs.render_microblock();
+
+    // Microblock 3: return to half-size
+    ms->manager.transition(MICRO, "w", ".5");
+    ms->manager.transition(MICRO, "h", ".5");
+    cs.render_microblock();
+
+    // Microblock 4: animate child's position on the parent canvas
+    cs.manager.transition(MICRO, "ms.x", "{t} sin .5 * .5 +");
+    cs.manager.transition(MICRO, "ms.y", "{t} cos .5 * .5 +");
+    cs.render_microblock();
+
+    // Microblock 5: spin the child around its center
+    cs.manager.transition(MICRO, "ms.angle", "{t}");
+    cs.render_microblock();
+}
+```
+
+<Tip>
+  Notice the distinction: transitions on `ms->manager` animate variables **inside** the child scene (its own content), while transitions on `cs.manager` with the `"ms."` prefix animate how the child is **positioned** on the parent canvas.
+</Tip>
+
+---
+
+## `ThreeDimensionScene`
+
+**Header:** `src/Scenes/Common/ThreeDimensionScene.h`  
+**Inherits:** `SuperScene → Scene`
+
+`ThreeDimensionScene` provides a perspective 3-D camera that projects `Point` and `Line` geometry onto the 2-D pixel buffer using CUDA kernels. The camera is defined by a quaternion orientation, a scalar distance from a focus point, and a field-of-view angle. This class is not typically used directly — `GraphScene`, `ManifoldScene`, `RubiksScene`, and others extend it.
+
+### Camera State Variables
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `q1`, `qi`, `qj`, `qk` | `1, 0, 0, 0` | Quaternion encoding camera orientation (normalised before use) |
+| `d` | `1` | Distance from the camera to the focus point |
+| `fov` | `1` | Field of view (radians, approximately) |
+| `x`, `y`, `z` | `0` | World-space coordinates of the focus point |
+| `lines_opacity` | `1` | Global opacity multiplier for all lines |
+| `points_opacity` | `1` | Global opacity multiplier for all points |
+| `points_radius_multiplier` | `1` | Scale factor applied to every point radius |
+| `lines_thickness_multiplier` | `1` | Scale factor applied to every line thickness |
+| `point_labels_size` | `0` | Size of per-point LaTeX labels (0 = hidden) |
+
+### Geometry API
+
+```cpp
+// Add a point with world-space position, color, opacity, and radius
+void add_point(const Point& p);
+
+// Add a line segment between two world-space positions
+void add_line(const Line& l);
+
+// Clear all points / lines (called automatically on each draw)
+void clear_points();
+void clear_lines();
+```
+
+### Animating the Camera
+
+Camera orientation is animated by transitioning the quaternion components. For example, to rotate the camera view using the `RubiksDemo` approach:
+
+```cpp
+quat yaw   = quat(cos(0.125 * M_PI), 0, sin(0.125 * M_PI), 0);
+quat pitch = quat(cos(-0.098 * M_PI), sin(-0.098 * M_PI), 0, 0);
+quat combined = pitch * yaw;
+
+rs.manager.transition(MACRO, {
+    {"q1", to_string(combined.u)},
+    {"qi", to_string(combined.i)},
+    {"qj", to_string(combined.j)},
+    {"qk", to_string(combined.k)},
+    {"d",   "1.4"},
+    {"fov", "0.25"},
+});
+```
+
+<Note>
+  The engine calls `normalize()` on the quaternion before projecting, so you do not need to normalise manually after every transition.
+</Note>
+
+---
+
+## `CoordinateScene`
+
+**Header:** `src/Scenes/Common/CoordinateScene.h`  
+**Inherits:** `Scene`
+
+`CoordinateScene` manages a 2-D mathematical viewport — a window into the real or complex plane — and optionally draws labeled tick-mark axes. It is the base class for all 2-D math scenes (Mandelbrot, ConwayScene, RootFractal, OuterBilliardsScene, etc.).
+
+### Viewport State Variables
+
+| Variable | Default | Derived meaning |
+|---|---|---|
+| `center_x` | `0` | Horizontal center of the viewport in math-space |
+| `center_y` | `0` | Vertical center of the viewport in math-space |
+| `zoom` | `0` | Log-scale zoom: `window_height = exp(zoom) * 0.2` |
+| `ticks_opacity` | `0` | Opacity of the grid axis tick marks (0 = hidden) |
+| `window_width` | derived | Computed from `zoom` and aspect ratio |
+| `window_height` | derived | `exp(zoom) * 0.2` |
+
+### Coordinate Conversion
+
+```cpp
+// Convert a math-space point to pixel coordinates
+vec2 point_to_pixel(const vec2& p);
+
+// Convert pixel coordinates back to math-space
+vec2 pixel_to_point(const vec2& pix);
+```
+
+### Complex Plane Mode
+
+Setting the public field `complex_plane = true` changes the axis tick labels to use `i` notation (`1i`, `2i`, `-1i`) on the y-axis. This is used by `MandelbrotScene` and `RootFractalScene`.
+
+```cpp
+MandelbrotScene ms;
+ms.complex_plane = true;   // label y-axis as imaginary axis
+ms.manager.set("ticks_opacity", "1");
+```
+
+---
+
+## `BackgroundScene`
+
+**Header:** `src/Scenes/Common/BackgroundScene.h`  
+**Inherits:** `Scene`
+
+`BackgroundScene` renders a single solid-color rectangle (or a smooth GPU-interpolated gradient between two colors) filling the entire frame. It is almost always added as the first (bottom-most) subscene inside a `CompositeScene`.
+
+### State Variables
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `bg_0_r`, `bg_0_g`, `bg_0_b` | `0, 65, 65` | RGB components (0–255) of the first background color |
+| `bg_1_r`, `bg_1_g`, `bg_1_b` | `2, 65, 68` | RGB components (0–255) of the second background color |
+| `slider` | `0` | Blend factor: `0` = color 0 only; `1` = color 1 only; in-between = GPU gradient blend |
+
+### Typical Usage
+
+```cpp
+CompositeScene cs;
+auto bg = make_shared<BackgroundScene>();
+cs.add_scene(bg, "bg");
+
+// Transition to a warm tone
+bg->manager.transition(MACRO, {
+    {"bg_0_r", "80"},
+    {"bg_0_g", "20"},
+    {"bg_0_b", "10"},
+});
+```
+
+<Note>
+  Pass `behind = true` to `add_scene` or `add_scene_fade_in` to ensure the background is composited below all other children even when added after them.
+</Note>

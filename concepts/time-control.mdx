@@ -1,0 +1,179 @@
+---
+title: "Two-Tier Timeline: Macroblocks and Microblocks in Sync"
+sidebarTitle: "Time Control"
+description: "How SwapTube's two-layer time system aligns audio segments and visual transitions so you never have to calculate a frame timestamp manually."
+---
+
+SwapTube organizes every video around a two-tier time system designed so that you never have to calculate timestamps manually. Audio is divided into **Macroblocks** — atomic audio segments that usually map to a single sentence in your script — and each Macroblock is subdivided into one or more **Microblocks**, which are the atomic units of visual change. Because SwapTube knows the duration of every Macroblock at staging time, it can automatically distribute frames across all Microblocks and drive transitions to completion precisely at the right moment.
+
+## Macroblocks
+
+A Macroblock is the top-level time unit. Every Macroblock carries some audio payload, and SwapTube derives the total frame count for that segment by measuring the audio duration. There are four concrete types.
+
+<Accordion title="SilenceBlock — timed silence">
+```cpp
+SilenceBlock(double duration_seconds)
+```
+Inserts a silent audio segment of the given length. The constructor converts the duration to frames using the project framerate and throws `std::invalid_argument` if the result is zero or negative.
+
+**Example:**
+```cpp
+stage_macroblock(SilenceBlock(4));
+ms.render_microblock();
+```
+</Accordion>
+
+<Accordion title="FileBlock — narration from a .wav file">
+```cpp
+FileBlock(const string& subtitle_text)
+```
+Derives a `.wav` filename from `subtitle_text` by replacing spaces with underscores and stripping non-alphanumeric characters. It writes the filename and subtitle text into `record_list.tsv` so that `record_audios.py` can later prompt you to record that line. During a real render, the audio encoder reads the `.wav` file and measures its actual sample count to determine the segment duration.
+
+**Example:**
+```cpp
+stage_macroblock(FileBlock("The Mandelbrot set lives at the boundary of chaos."));
+ms.render_microblock();
+```
+</Accordion>
+
+<Accordion title="GeneratedBlock — programmatic audio">
+```cpp
+GeneratedBlock(const vector<int32_t>& leftBuffer, const vector<int32_t>& rightBuffer)
+```
+Accepts pre-computed stereo PCM buffers. Both buffers must be the same length; a mismatch throws `std::invalid_argument`. The subtitle written for this block is always `[Computer Generated Sound]`.
+
+**Example:**
+```cpp
+vector<sample_t> left, right;
+generate_audio(12, left, right);
+stage_macroblock(GeneratedBlock(left, right), 1);
+cs.render_microblock();
+```
+*(Full example: `src/Projects/Demos/GeneratedBlockDemo.cpp`)*
+</Accordion>
+
+<Accordion title="CompositeBlock — two blocks in sequence">
+```cpp
+CompositeBlock(const Macroblock& a, const Macroblock& b)
+```
+Concatenates two Macroblocks into a single logical Macroblock whose total duration is the sum of both parts. `write_shtooka()` is forwarded to both children, making `record_list.tsv` entries for each spoken segment.
+
+**Example from `TimelineDemo.cpp`:**
+```cpp
+stage_macroblock(CompositeBlock(SilenceBlock(5), SilenceBlock(1)), 5);
+for(int i = 0; i < 5; i++) sss.render_microblock();
+```
+</Accordion>
+
+<Note>
+A Macroblock is staged **globally**, not on a particular scene. `stage_macroblock()` is a free function, not a method. You call it once, then call `render_microblock()` on whichever scene should own the visuals for that segment.
+</Note>
+
+## Microblocks
+
+After staging a Macroblock, the project file calls `yourscene.render_microblock()` once for every visual segment within that audio window. SwapTube divides the Macroblock's total frame count evenly across all `render_microblock()` calls and renders the appropriate number of frames for each one.
+
+```cpp
+stage_macroblock(FileBlock("Now I will zoom into the set."));
+ms.render_microblock(); // static hold
+ms.manager.transition(MICRO, "zoom", "1");
+ms.render_microblock(); // animated zoom
+```
+
+Each call to `render_microblock()` also:
+
+- Advances the `{microblock_number}` global.
+- Updates `{microblock_fraction}` (0 → 1) across the frames it owns.
+- Closes any pending `MICRO` transitions on the scene's StateManager once the call completes.
+
+<Steps>
+  <Step title="Stage a Macroblock">
+    Call `stage_macroblock(block)` to register audio. SwapTube writes audio to the encoder and records the duration in frames.
+  </Step>
+  <Step title="Optionally mutate state">
+    Call `scene.manager.transition(MICRO, ...)` or `scene.manager.set(...)` to describe what should happen visually during the upcoming microblock.
+  </Step>
+  <Step title="Render a Microblock">
+    Call `scene.render_microblock()`. SwapTube renders all frames for this visual segment, driving `{microblock_fraction}` from 0 to 1 over those frames, then closes the MICRO transition.
+  </Step>
+  <Step title="Repeat until the Macroblock is consumed">
+    Repeat steps 2–3 until you have called `render_microblock()` the correct number of times. Staging the next Macroblock before the previous one is fully consumed is a runtime error.
+  </Step>
+</Steps>
+
+## The `stage_macroblock(block, n)` Override
+
+Passing a second integer argument to `stage_macroblock` **declares** the expected microblock count for this Macroblock, overriding whatever count the smoketest recorded.
+
+```cpp
+stage_macroblock(SilenceBlock(4), 2);
+ms.render_microblock();
+ms.manager.transition(MICRO, "zoom", "1");
+ms.render_microblock();
+```
+
+*(From `MandelbrotDemo.cpp`)*
+
+SwapTube emits a warning when the declared count differs from the smoketest-observed count, and the render uses the declared value. Use this deliberately when the render intentionally differs from the smoketest — for example, when the number of microblocks is data-driven but you want the smoketest to pass without running the full data pipeline.
+
+<Warning>
+If the render observes a different microblock count from the smoketest **and** no declared count was given, SwapTube stops with an error. Project control flow must be deterministic between the two passes.
+</Warning>
+
+## Skipping Sections During Development: `set_for_real(bool)`
+
+While developing a later section of a long video, you can avoid re-rendering the entire beginning by wrapping the sections you want to skip:
+
+```cpp
+set_for_real(false);
+// All stage_macroblock / render_microblock calls here still execute,
+// but no frames are drawn or encoded.
+stage_macroblock(FileBlock("This is the beginning of the video."));
+intro_scene.render_microblock();
+
+set_for_real(true);
+// Everything from here onward renders normally.
+stage_macroblock(FileBlock("This is the part I am currently working on."));
+work_scene.render_microblock();
+```
+
+`set_for_real(false)` does **not** skip project execution. State transitions still run, global counters still advance, and `record_list.tsv` is still written. Only GPU drawing and video/audio encoding are suppressed. This means the StateManager is consistent when `set_for_real(true)` resumes.
+
+<Tip>
+`rendering_on()` returns `true` only when both `is_for_real()` and `!is_smoketest()` are true. You can call it from your own project code to gate expensive data computation that is only meaningful during a full render.
+</Tip>
+
+## Full Example: CompositeDemo
+
+The following project from `src/Projects/Demos/CompositeDemo.cpp` shows how five Microblocks share a single five-second Macroblock, with each Microblock applying a different MICRO transition to animate a child scene's position, size, and angle over time:
+
+```cpp
+#include "../Scenes/Common/CompositeScene.h"
+#include "../Scenes/Math/MandelbrotScene.h"
+
+void render_video() {
+    CompositeScene cs;
+    stage_macroblock(SilenceBlock(5), 5);
+    shared_ptr<MandelbrotScene> ms = make_shared<MandelbrotScene>();
+    cs.add_scene(ms, "ms");
+
+    cs.render_microblock();
+
+    ms->manager.transition(MICRO, "w", "{t} 3 * sin .3 * .5 +");
+    ms->manager.transition(MICRO, "h", "{t} 5 * cos .3 * .5 +");
+    cs.render_microblock();
+
+    ms->manager.transition(MICRO, "w", ".5");
+    ms->manager.transition(MICRO, "h", ".5");
+    cs.render_microblock();
+
+    cs.manager.transition(MICRO, "ms.x", "{t} sin .5 * .5 +");
+    cs.manager.transition(MICRO, "ms.y", "{t} cos .5 * .5 +");
+    cs.render_microblock();
+
+    cs.manager.transition(MICRO, "ms.angle", "{t}");
+    cs.render_microblock();
+}
+```
+
+The five-second `SilenceBlock(5)` is declared with `5` Microblocks. Each `render_microblock()` call owns one-fifth of the total frames. Transitions that are started before a call are completed (snapped to their endpoint) when that call returns.

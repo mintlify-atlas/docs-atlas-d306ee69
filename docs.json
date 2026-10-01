@@ -1,72 +1,98 @@
 {
   "$schema": "https://mintlify.com/docs.json",
-  "theme": "mint",
-  "name": "Mintlify Starter Kit",
+  "name": "SwapTube",
+  "theme": "aspen",
   "colors": {
-    "primary": "#16A34A",
-    "light": "#07C983",
-    "dark": "#15803D"
+    "primary": "#0f0f0f",
+    "light": "#ff0033",
+    "dark": "#fc7494"
   },
-  "favicon": "/favicon.svg",
-  "navigation": {
-    "pages": [
-      {
-        "group": "Getting Started",
-        "pages": [
-          "index",
-          "quickstart"
-        ]
-      }
-    ],
-    "global": {
-      "anchors": [
-        {
-          "anchor": "Documentation",
-          "href": "https://mintlify.com/docs",
-          "icon": "book-open-cover"
-        },
-        {
-          "anchor": "Blog",
-          "href": "https://mintlify.com/blog",
-          "icon": "newspaper"
-        }
-      ]
-    }
-  },
+  "favicon": "https://media.brand.dev/e9d57f51-3e89-4354-9bb4-38662a5dcc0e.png",
   "logo": {
-    "light": "/logo/light.svg",
-    "dark": "/logo/dark.svg"
+    "light": "https://media.brand.dev/b444f376-2b94-46d7-a70c-42bd655875fd.svg",
+    "dark": "https://media.brand.dev/b444f376-2b94-46d7-a70c-42bd655875fd.svg"
   },
   "navbar": {
-    "links": [
-      {
-        "label": "Support",
-        "href": "mailto:support@mintlify.com"
-      }
-    ],
     "primary": {
-      "type": "button",
-      "label": "Dashboard",
-      "href": "https://app.mintlify.com"
+      "type": "github",
+      "href": "https://github.com/2swap/swaptube"
     }
-  },
-  "contextual": {
-    "options": [
-      "copy",
-      "view",
-      "chatgpt",
-      "claude",
-      "perplexity",
-      "mcp",
-      "cursor",
-      "vscode"
-    ]
   },
   "footer": {
     "socials": {
-      "x": "https://x.com/mintlify",
-      "github": "https://github.com/mintlify",
-      "linkedin": "https://linkedin.com/company/mintlify"
+      "github": "https://github.com/2swap/swaptube"
     }
+  },
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "installation",
+              "quickstart"
+            ]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "concepts/time-control",
+              "concepts/state-manager",
+              "concepts/smoketesting"
+            ]
+          },
+          {
+            "group": "Scenes",
+            "pages": [
+              "scenes/overview",
+              "scenes/common-scenes",
+              "scenes/math-scenes",
+              "scenes/media-scenes",
+              "scenes/physics-scenes"
+            ]
+          },
+          {
+            "group": "Guides",
+            "pages": [
+              "guides/creating-a-project",
+              "guides/audio-and-narration",
+              "guides/docker",
+              "guides/wsl"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "Timeline API",
+            "pages": [
+              "api/macroblocks",
+              "api/microblocks"
+            ]
+          },
+          {
+            "group": "State API",
+            "pages": [
+              "api/state-manager",
+              "api/global-state"
+            ]
+          },
+          {
+            "group": "Scene API",
+            "pages": [
+              "api/scene-base",
+              "api/composite-scene",
+              "api/coordinate-scene",
+              "api/threed-scene"
+            ]
+          }
+        ]
+      }
+    ]
   }
 }

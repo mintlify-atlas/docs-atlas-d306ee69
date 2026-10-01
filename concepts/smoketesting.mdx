@@ -1,0 +1,236 @@
+---
+title: "Smoketesting: Mandatory Pre-Render Validation Pass"
+sidebarTitle: "Smoketesting"
+description: "How SwapTube's mandatory smoketest pass validates project structure, records microblock counts, and protects multi-hour renders from control-flow bugs."
+---
+
+Every time you invoke `go.sh`, SwapTube runs your project twice. The first pass is the **smoketest**: a lightweight validation run at 320×180 that counts every call to `render_microblock()`, verifies that state equations are valid, and writes `record_list.tsv` so you can record your audio script. Only after the smoketest passes does SwapTube begin the full-resolution render. This two-pass design means a logic error in your project file surfaces in seconds, rather than hours into an expensive GPU render.
+
+## What the Smoketest Does
+
+<Steps>
+  <Step title="Runs at 320×180">
+    The binary is invoked as `./swaptube 320 180 <framerate> <samplerate> smoketest ...`. The reduced resolution makes per-frame GPU work trivial, so the whole pass typically completes in under a second even for complex scenes.
+  </Step>
+  <Step title="Renders one test frame per Microblock">
+    For each `render_microblock()` call, exactly **one** frame is rendered and passed through the GPU draw path. This is enough to catch crashes in CUDA kernels and state equation errors, without the cost of rendering every frame at full resolution.
+  </Step>
+  <Step title="Performs all state transitions">
+    The StateManager evaluates all equations and runs every `set()` and `transition()` call exactly as it would during a real render. Any invalid equation (e.g. a missing dependency, a cyclic DAG, a divide-by-zero) surfaces here.
+  </Step>
+  <Step title="Records microblock counts to microblock_counts.txt">
+    As each Macroblock's microblocks are counted, SwapTube writes the count to `out/<ProjectName>/<timestamp>/microblock_counts.txt` (referred to internally as the timeline plan). The full render reads this file to know how many frames to allocate to each Macroblock.
+  </Step>
+  <Step title="Rewrites record_list.tsv">
+    `FileBlock` entries write their filename and subtitle text to `media/<ProjectName>/record_list.tsv`. Because the smoketest runs first on every `go.sh` invocation, this file is always up to date — even when using `-s` to skip the full render.
+  </Step>
+</Steps>
+
+## What the Smoketest Does NOT Do
+
+<Note>
+These operations are explicitly skipped during the smoketest, regardless of the `-s` flag.
+</Note>
+
+- **No video encoding.** Frames are drawn to GPU memory and then discarded. The FFMPEG video encoder is never opened.
+- **No audio encoding.** Audio buffers are processed (so durations are measured) but are not written to a file.
+- **No subtitle entries are written.** Subtitle timestamps are not recorded to the `.srt` output file.
+
+This means a smoketest produces no watchable output — only the microblock count file and `record_list.tsv`.
+
+## Running in Smoketest-Only Mode: `-s`
+
+Pass `-s` to `go.sh` to stop after the smoketest without starting the full render:
+
+```bash
+./go.sh MyProject 1920 1080 30 -s
+```
+
+This is the fastest way to iterate on project structure, verify that new state equations are syntactically correct, or update `record_list.tsv` before recording narration.
+
+```bash
+# Compile, smoketest, then stop — no render
+./go.sh MandelbrotDemo 640 360 30 -s
+
+# The test.sh script uses this mode internally to validate all demos:
+./test.sh
+```
+
+## The Determinism Requirement
+
+The smoketest and the full render call `render_video()` independently as two separate process invocations. SwapTube cross-checks the two runs: if the full render reaches a Macroblock and finds a different microblock count than what the smoketest recorded, it stops immediately with an error.
+
+This means **project control flow must be deterministic and produce identical Macroblock/Microblock sequences on both runs**. In practice:
+
+<Warning>
+Do not base `stage_macroblock()` or `render_microblock()` calls on:
+
+- Frame output (pixel data, PNG files) — nothing is written during the smoketest.
+- Encoding output — no audio or video files are produced.
+- Global state that only advances during full renders — `{frame_number}`, `{t}`, etc. advance normally during smoketest, but if you branch on the rendered output of a previous run, the two passes diverge.
+- Mutable files written only during the render path that the smoketest doesn't write.
+</Warning>
+
+The following patterns are **safe** because they run the same logic on both passes:
+
+```cpp
+// Safe: loop count is a compile-time constant
+for (int i = 0; i < 5; i++) {
+    sss.render_microblock();
+}
+
+// Safe: branch is on a constructor argument, not rendered output
+if (use_long_intro) {
+    stage_macroblock(SilenceBlock(3));
+    scene.render_microblock();
+}
+```
+
+### What happens when counts diverge
+
+If the full render encounters more or fewer `render_microblock()` calls than the smoketest recorded, SwapTube throws:
+
+```text
+ERROR: Attempted to render video, without having added audio first!
+You probably forgot to stage_macroblock()!
+Or perhaps you staged too few microblocks — N were staged, but there should have been more.
+```
+
+or:
+
+```text
+Microblock plan contains unused macroblock entries
+```
+
+## Deliberately Overriding the Smoketest Count
+
+When the render must intentionally differ from the smoketest, supply a declared count as the second argument to `stage_macroblock()`:
+
+```cpp
+stage_macroblock(SilenceBlock(4), 2);
+ms.render_microblock();
+ms.manager.transition(MICRO, "zoom", "1");
+ms.render_microblock();
+```
+
+The render uses `2` regardless of how many times the smoketest called `render_microblock()` for this Macroblock. SwapTube prints a warning when the declared count differs from the observed count so you are not surprised:
+
+```text
+WARNING: macroblock 1 declares 2 microblocks, but smoketest observed 1: SilenceBlock(4.0s).
+The render will use the declared count.
+```
+
+## Development Shortcut: `set_for_real(bool)`
+
+While you are actively developing a section deep in a long video, it is tedious to smoketest (and render) the entire beginning every time. `set_for_real(false)` tells SwapTube to keep executing all project logic — including state updates and macroblock staging — but to skip GPU drawing and encoding:
+
+```cpp
+set_for_real(false);
+// These sections are validated but produce no output frames.
+stage_macroblock(FileBlock("This is the introduction."));
+intro_scene.render_microblock();
+
+stage_macroblock(FileBlock("This is the second section."));
+second_scene.render_microblock();
+
+set_for_real(true);
+// Only this section is actually rendered.
+stage_macroblock(FileBlock("This is the part I am working on."));
+wip_scene.render_microblock();
+```
+
+<Note>
+`set_for_real(false)` does not make those sections disappear from the project's control flow. The smoketest still counts their microblocks, `record_list.tsv` still records their `FileBlock` entries, and state transitions still run. This keeps the full render consistent with the smoketest.
+</Note>
+
+Under the hood, `rendering_on()` is defined as:
+
+```cpp
+bool rendering_on() { return FOR_REAL && !SMOKETEST; }
+```
+
+So `set_for_real(false)` suppresses output during both the smoketest pass and the render pass for those sections.
+
+## What Can Go Wrong — Common Mistakes
+
+<Accordion title="Branching on output files written only during the render">
+```cpp
+// BAD: file is not written during smoketest, so the branch diverges between passes
+if (filesystem::exists("io_out/frames/frame_000001.png")) {
+    stage_macroblock(SilenceBlock(2));
+    scene.render_microblock();
+}
+```
+
+The smoketest produces no frame files, so `exists(...)` is always false during the smoketest, but may be true during the render if a previous run left files behind. The microblock count will diverge and the render will abort.
+</Accordion>
+
+<Accordion title="Calling render_microblock() without a staged Macroblock">
+```cpp
+// BAD: forgot to call stage_macroblock() first
+scene.render_microblock();
+```
+
+SwapTube throws during the smoketest:
+
+```text
+render_microblock() was called without an active macroblock during smoketest
+```
+</Accordion>
+
+<Accordion title="Staging a new Macroblock before the previous one is finished">
+```cpp
+// BAD: only one render_microblock() but two were expected
+stage_macroblock(SilenceBlock(3), 2);
+scene.render_microblock(); // only called once — remaining count is 1
+
+stage_macroblock(SilenceBlock(2)); // Error thrown here during the render pass
+```
+
+During the render:
+
+```text
+ERROR: Attempted to add audio without having finished rendering video!
+You probably forgot to use render_microblock()!
+This macroblock had 2 microblocks, but render_microblock() was only called 1 times.
+```
+</Accordion>
+
+<Accordion title="State equation references a variable that doesn't exist yet">
+```cpp
+// BAD: "opacity" hasn't been set() before this transition
+scene.manager.transition(MICRO, "opacity", "1");
+```
+
+During the smoketest (or render):
+
+```text
+ERROR: Attempted to transition nonexistent variable opacity!
+```
+
+Always call `set()` before `transition()` for any variable.
+</Accordion>
+
+<Accordion title="Cyclic variable dependencies">
+```cpp
+// BAD: x depends on y and y depends on x
+scene.manager.set("x", "<y> 1 +");
+scene.manager.set("y", "<x> 2 *");
+```
+
+SwapTube detects this during `evaluate_all()`:
+
+```text
+error: variable dependency graph appears not to be a DAG! State has been printed above.
+```
+</Accordion>
+
+## Validating All Demos at Once
+
+`test.sh` compiles and smoketests every file matching `src/Projects/Demos/*.cpp`:
+
+```bash
+./test.sh
+```
+
+This is the fastest way to confirm that a change to the engine has not broken any existing demo. It is equivalent to running `go.sh <DemoName> 640 360 30 -s` for every demo, but in one step.

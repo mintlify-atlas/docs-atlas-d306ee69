@@ -1,0 +1,166 @@
+---
+title: "Scene System Overview: How SwapTube Renders"
+sidebarTitle: "Overview"
+description: "A complete guide to SwapTube's scene hierarchy, how scenes are instantiated and rendered per-frame, and how the state system drives every visual parameter."
+---
+
+Every visual element in a SwapTube video is a **Scene** — a self-contained GPU-backed rendering unit that owns its own pixel buffer and is driven by a reactive state machine. Understanding how scenes are structured, how they relate to one another, and how the `StateManager` feeds values into each `draw()` call is the foundation of building anything in SwapTube.
+
+## The `Scene` Base Class
+
+All scenes in SwapTube derive from `Scene`, declared in `src/Scenes/Scene.h`. A `Scene` wraps a GPU pixel buffer (`DevicePointer gpu_pix`), a `StateManager` for animated parameter storage, and the rendering lifecycle methods that the timeline engine calls on your behalf.
+
+```cpp
+// src/Scenes/Scene.h (key members)
+class Scene {
+public:
+    Scene(const vec2& dimensions = vec2(1, 1));
+
+    virtual void draw() = 0;           // Pure virtual — implement your render logic here
+
+    void render_microblock();          // Called once per microblock in your project
+    void update();                     // Evaluates state, then calls change_data() + draw()
+    uint32_t* query();                 // Returns the GPU pixel pointer after rendering
+
+    StateManager manager;              // Animate any named variable through this
+
+    int get_width();
+    int get_height();
+    ivec2 get_width_height();
+
+protected:
+    DevicePointer gpu_pix;             // GPU pixel buffer
+    StateReturn state;                 // Snapshot of all named variables after evaluation
+};
+```
+
+### Dimensions
+
+Every scene is constructed with an optional `vec2 dimensions` parameter. This represents the **fraction of the output video** that the scene occupies — `vec2(1, 1)` is full-screen; `vec2(0.5, 0.5)` is a quarter of the total pixel area. The state variables `w` and `h` are automatically initialised from these values and are live-animatable.
+
+```cpp
+// A scene that occupies the right half of the screen
+MandelbrotScene ms(vec2(0.5, 1.0));
+```
+
+### The Rendering Loop
+
+SwapTube's timeline is divided into **macroblocks** (audio segments) and **microblocks** (rendered video chunks). Calling `render_microblock()` on a scene advances it through one microblock's worth of frames. You never call `draw()` directly — the engine does so for every frame inside the microblock.
+
+```cpp
+stage_macroblock(SilenceBlock(5), 3);  // 5-second audio block, 3 microblocks
+my_scene.render_microblock();          // microblock 1
+my_scene.render_microblock();          // microblock 2
+my_scene.render_microblock();          // microblock 3
+```
+
+## State Variables
+
+Every `Scene` has a `manager` member of type `StateManager`. You use it to define, set, and animate named floating-point variables in **reverse Polish notation (RPN)**. These values are evaluated fresh before each `draw()` call and become available inside the scene as `state["variable_name"]`.
+
+```cpp
+// Set a variable immediately
+ms.manager.set("zoom", "1.5");
+
+// Smoothly animate a variable over one microblock
+ms.manager.transition(MICRO, "zoom", "3.0");
+
+// Smoothly animate a variable over one macroblock
+ms.manager.transition(MACRO, "zoom", "3.0");
+
+// Animate using a formula referencing global time
+ms.manager.transition(MICRO, "center_x", "{t} 2 * sin .4 *");
+```
+
+<Note>
+  Equations are evaluated in RPN (Reverse Polish Notation). The token `{t}` refers to the current video time in seconds. Angle brackets like `<zoom>` reference other state variables by name.
+</Note>
+
+## Scene Hierarchy
+
+SwapTube organises scenes into a class hierarchy. Each level adds compositing or structural capability without changing the core rendering contract.
+
+```
+Scene
+├── SuperScene          — manages a keyed collection of child subscenes
+│   ├── CompositeScene  — overlays subscenes at animated positions/angles/opacity
+│   └── ThreeDimensionScene — 3-D point/line rendering with quaternion camera
+│       └── GraphScene  — force-directed graph on top of ThreeDimensionScene
+├── CoordinateScene     — 2-D coordinate grid, optional complex-plane mode
+│   ├── MandelbrotScene
+│   ├── RootFractalScene
+│   ├── ConwayScene
+│   └── ... (all 2-D math scenes)
+└── (leaf scenes)       — LatexScene, PngScene, BackgroundScene, PendulumScene, …
+```
+
+### `SuperScene`
+
+`SuperScene` (not instantiated directly) is the base for any scene that can own child subscenes. It provides lifecycle management — fading, removing, reordering — for those children:
+
+```cpp
+void fade_subscene(TransitionType tt, const string& name, double opacity_final);
+void fade_all_subscenes(TransitionType tt, double opacity);
+void remove_subscene(const string& name);
+void move_to_front(const string& name);
+shared_ptr<Scene> get_subscene_pointer(const string& name);
+```
+
+### `CompositeScene`
+
+`CompositeScene` extends `SuperScene` and is the primary tool for building multi-scene layouts. Child scenes are registered with `add_scene()` and positioned via state variables. See [Common Scenes](/scenes/common-scenes) for full details.
+
+### `ThreeDimensionScene`
+
+Provides a quaternion-based 3-D camera with configurable field of view, focus point, and distance. State variables `q1`, `qi`, `qj`, `qk` encode the camera orientation quaternion; `d` is the distance from focus; `fov` is the field of view. See [Common Scenes](/scenes/common-scenes).
+
+### `CoordinateScene`
+
+Provides a 2-D coordinate grid that maps mathematical space to screen pixels. The viewport is controlled by `center_x`, `center_y`, and `zoom` state variables, with optional tick-mark rendering and complex-plane labelling. See [Common Scenes](/scenes/common-scenes).
+
+## Minimal End-to-End Example
+
+<Steps>
+  <Step title="Include the scene header">
+    ```cpp
+    #include "Scenes/Math/MandelbrotScene.h"
+    ```
+  </Step>
+  <Step title="Instantiate the scene">
+    ```cpp
+    void render_video() {
+        MandelbrotScene ms;
+    ```
+  </Step>
+  <Step title="Configure initial state">
+    ```cpp
+        ms.manager.set("zoom", ".2");
+    ```
+  </Step>
+  <Step title="Stage a macroblock and render microblocks">
+    ```cpp
+        stage_macroblock(SilenceBlock(4), 2);
+        ms.render_microblock();           // first half of the macroblock
+        ms.manager.transition(MICRO, "zoom", "1");
+        ms.render_microblock();           // second half — zoom animates to 1
+    }
+    ```
+  </Step>
+</Steps>
+
+## Sub-pages
+
+<CardGroup cols={2}>
+  <Card title="Common Scenes" icon="layer-group" href="/scenes/common-scenes">
+    CompositeScene, ThreeDimensionScene, CoordinateScene, and BackgroundScene — the structural building blocks you compose every project from.
+  </Card>
+  <Card title="Math Scenes" icon="function" href="/scenes/math-scenes">
+    Mandelbrot, Mandelbulb, GraphScene, RubiksScene, ManifoldScene, ConwayScene, and every other mathematical visualisation scene.
+  </Card>
+  <Card title="Media Scenes" icon="photo-film" href="/scenes/media-scenes">
+    LatexScene, PngScene, Mp4Scene, WhitePaperScene, CursorScene, StateSliderScene, and MidiSoundScene for rendering text, images, and UI overlays.
+  </Card>
+  <Card title="Physics Scenes" icon="atom" href="/scenes/physics-scenes">
+    PendulumScene, RopeScene, PendulumGridScene, and MovingPendulumGridScene for GPU-accelerated physical simulations.
+  </Card>
+</CardGroup>

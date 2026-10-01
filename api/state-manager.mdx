@@ -1,0 +1,445 @@
+---
+title: "StateManager: Variable Equations & Transitions"
+sidebarTitle: "State Manager"
+description: "Full API reference for StateManager — the DAG-based variable engine driving per-frame scene parameters, transitions, and parent-child state in SwapTube."
+---
+
+Every SwapTube scene owns a public `StateManager manager` member. The `StateManager` is a Directed Acyclic Graph (DAG) of named variable definitions expressed as space-delimited Reverse Polish Notation (RPN) equations. On each rendered frame SwapTube evaluates every variable in dependency order, resolves references to other local variables, parent-scene variables, global sensors, or CUDA passthrough tags, and delivers a flat `StateReturn` snapshot to the scene's `draw()` method. Because evaluation is topologically sorted, circular dependencies are caught at runtime and rejected. All state changes — both immediate `set` assignments and time-based `transition` calls — go through `StateManager`, giving you a single authoritative source of truth for every numerical parameter your scene needs.
+
+---
+
+## Variable Notation
+
+Equations are written as space-separated tokens in Reverse Polish Notation. Each token is either a numeric literal, an operator keyword, or one of four bracketed variable references:
+
+| Syntax | Meaning |
+|---|---|
+| `<name>` | **Local variable** — resolved against this `StateManager`'s own variable table |
+| `[name]` | **Parent variable** — resolved against the parent `StateManager` (requires `set_parent`) |
+| `{name}` | **Global variable** — resolved against the process-wide `GlobalState` table (e.g. `{t}`, `{microblock_fraction}`) |
+| `(a)` – `(i)` | **CUDA passthrough tag** — a single-letter index (`a`–`i`) into the per-pixel tag array supplied to the CUDA kernel; not evaluated on the CPU |
+
+Variable names may contain only ASCII letters, digits, dots (`.`), and underscores (`_`). Any other character in the name causes a runtime error.
+
+<Note>
+  Cyclical dependencies — where variable `x` depends on `y` and `y` depends on `x` — are detected during evaluation and throw a runtime error. The DAG constraint is enforced every frame.
+</Note>
+
+---
+
+## RPN Equation Syntax
+
+Equations follow standard stack-based RPN evaluation. Tokens are pushed onto a stack left-to-right; operators pop their operands and push the result.
+
+<CodeGroup>
+
+```text Constant
+// The variable always equals 0.5
+"0.5"
+```
+
+```text Arithmetic
+// x = y + 5  (local variable y, plus 5)
+"<y> 5 +"
+
+// width = t * 3 * sin(..) + 0.5 (using global time)
+"{t} 3 * sin .3 * .5 +"
+```
+
+```text Lerp / Smoothlerp
+// Lerp between 0.2 and 0.8 using microblock progress
+"0.2 0.8 {microblock_fraction} lerp"
+
+// Smooth (eased) version of the same
+"0.2 0.8 {microblock_fraction} smoothlerp"
+```
+
+```text Bezier
+// 5-argument bezier: start, ctrl1, ctrl2, ctrl3(?), end, fraction
+"0 0.25 0.75 0.9 1 {macroblock_fraction} bezier"
+```
+
+</CodeGroup>
+
+### Supported Operators
+
+<Accordion title="Arithmetic & Algebra">
+| Token | Arity | Description |
+|-------|-------|-------------|
+| `+` | 2 | Addition |
+| `-` | 2 | Subtraction |
+| `*` | 2 | Multiplication |
+| `/` | 2 | Division |
+| `^` | 2 | Power (`a^b`) |
+| `^2` | 1 | Square (`a²`) |
+| `%` | 2 | Modulo (extended, handles negatives) |
+| `sqrt` | 1 | Square root |
+| `abs` | 1 | Absolute value |
+| `floor` | 1 | Floor |
+| `ceil` | 1 | Ceiling |
+| `log` | 1 | Natural logarithm |
+| `exp` | 1 | Euler's number raised to a power |
+</Accordion>
+
+<Accordion title="Trigonometry">
+| Token | Arity | Description |
+|-------|-------|-------------|
+| `sin` | 1 | Sine (radians) |
+| `cos` | 1 | Cosine (radians) |
+| `atan2` | 2 | Two-argument arctangent |
+</Accordion>
+
+<Accordion title="Constants (zero-arity)">
+| Token | Value |
+|-------|-------|
+| `pi` | 3.14159… |
+| `e` | 2.71828… |
+| `phi` | 1.61803… (golden ratio) |
+</Accordion>
+
+<Accordion title="Comparison (return 0.0 or 1.0)">
+| Token | Arity | Description |
+|-------|-------|-------------|
+| `>` | 2 | Greater-than |
+| `<` | 2 | Less-than |
+| `>=` | 2 | Greater-than-or-equal |
+| `<=` | 2 | Less-than-or-equal |
+| `==` | 2 | Equality (epsilon 1e-9) |
+| `!==` | 2 | Inequality (epsilon 1e-9) |
+</Accordion>
+
+<Accordion title="Interpolation & Curves">
+| Token | Arity | Description |
+|-------|-------|-------------|
+| `lerp` | 3 | Linear interpolation: `a + t*(b-a)`, operand order `a b t` |
+| `smoothlerp` | 3 | Smoothstep-eased lerp: same operand order |
+| `bezier` | 5 | 4-point Bezier curve: `p0 p1 p2 p3 t` |
+| `logistic` | 1 | Logistic (sigmoid) function: `1/(1+e^-x)` |
+</Accordion>
+
+<Accordion title="Utility">
+| Token | Arity | Description |
+|-------|-------|-------------|
+| `min` | 2 | Minimum of two values |
+| `max` | 2 | Maximum of two values |
+</Accordion>
+
+---
+
+## StateReturn
+
+`get_state()` returns a `StateReturn` object — an immutable snapshot of all variable values at the moment of the call, merged with the global state table. Scenes receive this as `state` in their `draw()` method.
+
+```cpp
+// Inside a Scene::draw() implementation
+double opacity = state["opacity"];
+double angle   = state["rotation_angle"];
+```
+
+<Warning>
+  Accessing a key that does not exist in a `StateReturn` throws `runtime_error: Invalid State Access: <key>`. Always ensure variables are registered with `set()` before reading them via `state[...]`.
+</Warning>
+
+---
+
+## Methods
+
+### `set` — Assign an Equation
+
+Immediately registers or replaces a variable definition. If the variable was mid-transition the pending transition is cancelled and the new equation takes effect outright.
+
+```cpp
+StateSet set(const string& variable, const string& equation);
+StateSet set(const StateSet& equations);
+```
+
+<ParamField path="variable" type="string" required>
+  Name of the variable to define. Must match `[a-zA-Z0-9._]+`.
+</ParamField>
+
+<ParamField path="equation" type="string" required>
+  An RPN equation string (space-delimited tokens). May contain numeric literals, operators, and any of the four variable reference syntaxes.
+</ParamField>
+
+**Returns** `StateSet` — a map of the variable's *previous* equation(s), or an empty map if the variable was new. This return value is used internally by `transition` to save the pre-transition equation for interpolation.
+
+<CodeGroup>
+
+```cpp Single variable
+ms.manager.set("zoom", ".2");
+ms.manager.set("opacity", "1");
+ms.manager.set("angle", "{t} sin");          // oscillates with global time
+ms.manager.set("w", "<h> 1.77 *");           // aspect-ratio lock via local variable
+```
+
+```cpp Batch (StateSet)
+ms.manager.set({
+    {"seed_c_r", ".4"},
+    {"seed_c_i", ".1"},
+    {"pixel_param_z", "1"},
+    {"pixel_param_c", "0"},
+});
+```
+
+</CodeGroup>
+
+---
+
+### `transition` — Animate a Variable
+
+Registers an animated transition from the variable's current equation to a new target equation. The transition interpolates over the span of the current macroblock (`MACRO`) or microblock (`MICRO`) using either linear or smoothstep easing.
+
+```cpp
+StateSet transition(TransitionType tt, const string& variable, const string& equation, bool smooth = true);
+StateSet transition(TransitionType tt, const StateSet& equations, bool smooth = true);
+```
+
+<ParamField path="tt" type="TransitionType" required>
+  Which time unit the transition runs over. `MICRO` spans one microblock; `MACRO` spans the entire macroblock. See [TransitionType](/api/global-state#transitiontype).
+</ParamField>
+
+<ParamField path="variable" type="string" required>
+  The existing variable to animate. The variable **must already exist** (registered via `set`). Attempting to transition a nonexistent variable throws a runtime error.
+</ParamField>
+
+<ParamField path="equation" type="string" required>
+  The target equation to animate toward. The variable will reach this value at the end of the transition period.
+</ParamField>
+
+<ParamField path="smooth" type="bool" default="true">
+  When `true` (default), uses `smoothlerp` (smoothstep easing). When `false`, uses `lerp` (linear). The smoothstep variant produces the characteristic ease-in/ease-out feel of SwapTube animations.
+</ParamField>
+
+**Returns** `StateSet` — the variable's equation *before* the transition began, keyed by variable name. Useful for chaining reversals.
+
+<Note>
+  Internally, `transition` rewrites the variable's equation to a `smoothlerp` (or `lerp`) expression between the old equation and the new one, using `{microblock_fraction}` or `{macroblock_fraction}` as the interpolation parameter. A hidden `variable.post_transition` variable stores the target so `close_transitions` can snap to the exact final value.
+</Note>
+
+<Warning>
+  Nested transitions are not supported. Calling `transition` on a variable that is already mid-transition throws `runtime_error: Transition added to a variable already in transition`. Close any in-flight transition with `close_transitions` before adding another.
+</Warning>
+
+<CodeGroup>
+
+```cpp Single variable
+ms.manager.transition(MICRO, "zoom", "1");                    // smooth (default)
+ms.manager.transition(MACRO, "opacity", "0", false);          // linear fade-out
+```
+
+```cpp Batch (StateSet)
+ms.manager.transition(MICRO, {
+    {"pixel_param_z", "1"},
+    {"pixel_param_c", "0"},
+    {"seed_c_r", ".4"},
+    {"seed_c_i", ".1"},
+});
+```
+
+```cpp Expression target
+// Animate width to a sine wave driven by global time
+ms->manager.transition(MICRO, "w", "{t} 3 * sin .3 * .5 +");
+ms->manager.transition(MICRO, "h", "{t} 5 * cos .3 * .5 +");
+```
+
+```cpp Composite scene positioning
+cs.manager.transition(MICRO, "ms.x", "{t} sin .5 * .5 +");
+cs.manager.transition(MICRO, "ms.y", "{t} cos .5 * .5 +");
+cs.manager.transition(MICRO, "ms.angle", "{t}");
+```
+
+</CodeGroup>
+
+---
+
+### `close_transitions` — Finalize In-Flight Transitions
+
+Immediately snaps all variables that are currently mid-transition (for the given `TransitionType`) to their final target equations. This is called automatically by the engine at macroblock and microblock boundaries via `on_end_transition`, but can also be called manually.
+
+```cpp
+void close_transitions(TransitionType tt);
+```
+
+<ParamField path="tt" type="TransitionType" required>
+  `MICRO` closes all active microblock transitions; `MACRO` closes all active macroblock transitions.
+</ParamField>
+
+After `close_transitions`, the interpolation variable is removed and the variable is reassigned directly to the post-transition equation with its final value. The `.post_transition` helper variable is also cleaned up.
+
+---
+
+### `remove` — Delete a Variable
+
+Removes a variable from the state table. If the variable is currently in a transition, the transition is cancelled and the associated `.post_transition` helper is also removed.
+
+```cpp
+void remove(const string& variable);
+void remove(const unordered_set<string>& variables);
+```
+
+<ParamField path="variable" type="string" required>
+  Name of the variable to remove. Silently no-ops if the variable does not exist (the internal `erase` on `unordered_map` is safe for missing keys).
+</ParamField>
+
+<Warning>
+  If other variables depend on the removed variable (reference it via `<name>`), evaluating those dependents on the next frame will throw a runtime error. Ensure downstream dependencies are cleaned up before removing a variable.
+</Warning>
+
+---
+
+### `set_parent` — Establish Parent-Child State Sharing
+
+Links this `StateManager` to a parent `StateManager`, enabling equations in this manager to reference the parent's variable values using `[name]` syntax. This is called automatically by `CompositeScene::add_scene` and does not usually need to be called manually.
+
+```cpp
+void set_parent(StateManager* p, const string& name);
+```
+
+<ParamField path="p" type="StateManager*" required>
+  Pointer to the parent `StateManager`. Pass `nullptr` to detach. The method enforces that the call transitions between set and unset states — passing a non-null pointer when a parent is already set, or passing `nullptr` when no parent is set, throws a runtime error.
+</ParamField>
+
+<ParamField path="name" type="string" required>
+  A human-readable identifier for this child relationship (used only in error messages).
+</ParamField>
+
+<Tip>
+  Once a parent is set, child-scene equations can pull parent variable values: `"[parent_opacity] 0.5 *"`. The parent's variables are read at the same frame cycle, so they must already be evaluated (fresh) before the child evaluates.
+</Tip>
+
+---
+
+### `get_state` — Snapshot All Values
+
+Returns an immutable `StateReturn` containing the current value of every variable in this manager's table, merged with the full global state table. If this manager is marked as *subjugated*, the call is forwarded to the parent manager.
+
+```cpp
+const StateReturn get_state() const;
+```
+
+**Returns** `StateReturn` — a flat map of `string → double` for all local and global variables. Global variables are merged under their bare names (e.g. `"t"`, `"microblock_fraction"`).
+
+<Warning>
+  This method throws if any variable is still marked stale (i.e., `evaluate_all()` has not been called since the last frame cycle). In normal usage SwapTube calls `evaluate_all()` automatically during `update_state()`. Only call `get_state()` after the scene's state has been fully evaluated for the current frame.
+</Warning>
+
+---
+
+### `get_local_value` — Read a Single Variable
+
+Returns the current numeric value of a named variable. The variable must exist and must be fresh (already evaluated this frame cycle).
+
+```cpp
+double get_local_value(const string& variable) const;
+```
+
+<ParamField path="variable" type="string" required>
+  The variable name to query.
+</ParamField>
+
+**Returns** `double` — the variable's current value.
+
+<Warning>
+  Throws `runtime_error` if the variable does not exist or if its value is stale (not yet evaluated in the current cycle). Use `contains()` first if existence is uncertain.
+</Warning>
+
+---
+
+### `contains` — Check Variable Existence
+
+Returns whether a named variable is currently registered in this `StateManager`.
+
+```cpp
+bool contains(const string& varname) const;
+```
+
+<ParamField path="varname" type="string" required>
+  The variable name to test.
+</ParamField>
+
+**Returns** `bool` — `true` if the variable exists in the local table, `false` otherwise. Does not search the parent or global state.
+
+---
+
+## StateReturn API
+
+The `StateReturn` type returned by `get_state()` exposes several convenience members:
+
+<ResponseField name="operator[]" type="const double&">
+  Read a value by key. Throws `runtime_error: Invalid State Access` if the key is absent.
+</ResponseField>
+
+<ResponseField name="contains(key)" type="bool">
+  Safe existence check before subscript access.
+</ResponseField>
+
+<ResponseField name="size()" type="int">
+  Number of entries in the snapshot.
+</ResponseField>
+
+<ResponseField name="get_map()" type="unordered_map<string, double>">
+  Returns the underlying map for iteration or serialization.
+</ResponseField>
+
+<ResponseField name="print()" type="void">
+  Prints all key-value pairs to stdout in alphabetical order, bracketed by `STATE vvv` / `STATE ^^^` headers. Useful for debugging.
+</ResponseField>
+
+---
+
+## Full Project Example
+
+The following is a self-contained project file demonstrating `set`, batch `transition`, and global-variable equations drawn directly from the SwapTube demo suite:
+
+```cpp
+#include "../Scenes/Math/MandelbrotScene.h"
+
+void render_video() {
+    MandelbrotScene ms;
+
+    // Immediately assign starting values
+    ms.manager.set("zoom", ".2");
+
+    // Batch-transition multiple variables over one microblock
+    ms.manager.transition(MICRO, {
+        {"pixel_param_z", "1"},
+        {"pixel_param_c", "0"},
+        {"seed_c_r",       ".4"},
+        {"seed_c_i",       ".1"},
+    });
+
+    stage_macroblock(SilenceBlock(4), 2);
+    ms.render_microblock();
+
+    // Single-variable transition over the next microblock
+    ms.manager.transition(MICRO, "zoom", "1");
+    ms.render_microblock();
+}
+```
+
+And a composite scene example showing `[parent]`-style variable sharing via the automatic parent link created by `CompositeScene::add_scene`:
+
+```cpp
+#include "../Scenes/Common/CompositeScene.h"
+#include "../Scenes/Math/MandelbrotScene.h"
+
+void render_video() {
+    CompositeScene cs;
+    stage_macroblock(SilenceBlock(5), 5);
+
+    shared_ptr<MandelbrotScene> ms = make_shared<MandelbrotScene>();
+    cs.add_scene(ms, "ms");        // internally calls set_parent on ms->manager
+    cs.render_microblock();
+
+    // Animate child scene dimensions with global time expressions
+    ms->manager.transition(MICRO, "w", "{t} 3 * sin .3 * .5 +");
+    ms->manager.transition(MICRO, "h", "{t} 5 * cos .3 * .5 +");
+    cs.render_microblock();
+
+    // Animate composite layout variables (position & rotation)
+    cs.manager.transition(MICRO, "ms.x",     "{t} sin .5 * .5 +");
+    cs.manager.transition(MICRO, "ms.y",     "{t} cos .5 * .5 +");
+    cs.manager.transition(MICRO, "ms.angle", "{t}");
+    cs.render_microblock();
+}
+```

@@ -1,0 +1,299 @@
+---
+title: "Media Scenes: LaTeX, Images, Video, and UI Overlays"
+sidebarTitle: "Media Scenes"
+description: "Complete reference for SwapTube's media and UI scenes: LatexScene, PngScene, Mp4Scene, WhitePaperScene, CursorScene, StateSliderScene, and MidiSoundScene."
+---
+
+Media scenes handle everything that is not pure mathematics — rendered text, static images, video playback, cursor overlays, parameter readouts, and sound. They are all leaf scenes (they do not contain child subscenes) and are almost always added as children of a `CompositeScene` so they can be layered on top of math content. Each one inherits `Scene` directly and is driven by the same `manager` / `state` system as every other scene.
+
+---
+
+## `LatexScene`
+
+**Header:** `src/Scenes/Media/LatexScene.h`  
+**Inherits:** `Scene`
+
+`LatexScene` renders a LaTeX equation string onto a GPU pixel buffer using **MicroTeX**, an open-source LaTeX math renderer. The scene supports smooth per-glyph animated transitions between equations, making it ideal for deriving results step by step on screen.
+
+<Note>
+  `LatexScene` requires MicroTeX to be installed and accessible at build time. See the [Installation guide](/installation) for setup instructions.
+</Note>
+
+### Constructor
+
+```cpp
+LatexScene(const string& l, const vec2& dimensions = vec2(1, 1));
+```
+
+Pass the initial LaTeX string as the first argument. Standard LaTeX math notation is supported (fractions, exponents, square roots, summations, Greek letters, etc.).
+
+### Transitioning Between Equations
+
+```cpp
+// Animate a smooth per-glyph morph from the current equation to `l`
+void begin_latex_transition(const TransitionType tt, const string& l);
+
+// Instantly replace the current equation with no animation
+void jump_latex(string l);
+```
+
+`begin_latex_transition` stores both the current and target equations and interpolates between them at render time. Pass `MICRO` to have the transition complete within one microblock, or `MACRO` for a macroblock-length animation.
+
+### Worked Example — `LatexDemo`
+
+The following is the complete `LatexDemo.cpp`, which shows the quadratic formula being derived in two steps:
+
+```cpp
+#include "Scenes/Media/LatexScene.h"
+
+void render_video() {
+    vector<string> latex_strings = {
+        "ax^2 + bx + c = 0",
+        "x^2 + \\frac{b}{a}x + \\frac{c}{a} = 0"
+    };
+
+    // Instantiate with the first equation
+    LatexScene latex(latex_strings[0]);
+
+    stage_macroblock(SilenceBlock(1), 1);
+    latex.render_microblock();            // display initial equation
+
+    // Transition to each subsequent equation
+    for (int i = 1; i < latex_strings.size(); i++) {
+        latex.begin_latex_transition(MICRO, latex_strings[i]);
+        stage_macroblock(SilenceBlock(1), 2);
+        latex.render_microblock();        // microblock 1: mid-transition
+        latex.render_microblock();        // microblock 2: completed
+    }
+}
+```
+
+<Tip>
+  Use `begin_latex_transition(MICRO, ...)` immediately before the `stage_macroblock` it belongs to. The transition interpolation is computed per-frame using `microblock_fraction` from global state, so it always finishes at exactly the end of the microblock.
+</Tip>
+
+---
+
+## `PngScene`
+
+**Header:** `src/Scenes/Media/PngScene.h`  
+**Inherits:** `Scene`
+
+`PngScene` loads a PNG image from disk and renders it into the scene's GPU pixel buffer. The image is cached on the GPU after the first load.
+
+### Constructor
+
+```cpp
+PngScene(string pn, const vec2& dimensions = vec2(1, 1));
+```
+
+`pn` is the image file path (without the `.png` extension, matching SwapTube's `png_to_pix` convention). The image is scaled to fill the scene's `dimensions`.
+
+### Typical Usage
+
+```cpp
+#include "Scenes/Media/PngScene.h"
+#include "Scenes/Common/CompositeScene.h"
+
+CompositeScene cs;
+auto logo = make_shared<PngScene>("../assets/logo");
+cs.add_scene(logo, "logo", vec2(0.5, 0.2));
+```
+
+---
+
+## `Mp4Scene`
+
+**Header:** `src/Scenes/Media/Mp4Scene.h`  
+**Inherits:** `Scene`
+
+`Mp4Scene` plays back one or more MP4 video files, decoded frame-by-frame and uploaded to the GPU each render frame. Multiple files are played in sequence.
+
+### Constructor
+
+```cpp
+Mp4Scene(
+    const vector<string>& mp4_filenames,
+    const double playback_speed = 1,
+    const Mp4EndBehavior behavior = Loop,
+    const vec2& dimensions = vec2(1, 1)
+);
+```
+
+### End Behavior
+
+```cpp
+enum Mp4EndBehavior {
+    Loop,   // Restart from the first frame of the first file when the playlist ends
+    Stop,   // Freeze on the last frame
+};
+```
+
+### Example
+
+```cpp
+#include "Scenes/Media/Mp4Scene.h"
+#include "Scenes/Common/CompositeScene.h"
+
+CompositeScene cs;
+auto clip = make_shared<Mp4Scene>(
+    vector<string>{"../footage/intro"},
+    1.0,
+    Loop
+);
+cs.add_scene(clip, "clip");
+```
+
+---
+
+## `WhitePaperScene`
+
+**Header:** `src/Scenes/Media/WhitePaperScene.h`  
+**Inherits:** `Scene`
+
+`WhitePaperScene` renders a series of paper pages — pre-rendered as PNG images — along with a rendered author byline. It is designed for animating a "scrolling paper" effect, where pages are loaded and composited in sequence.
+
+### Constructor
+
+```cpp
+WhitePaperScene(
+    const string& prefix,           // Filename prefix for page images
+    const string& author,           // Author string, rendered as LaTeX
+    const vector<int>& page_numbers,// Which page numbers to load (maps to PNG filenames)
+    const vec2& dimensions = vec2(1, 1)
+);
+```
+
+---
+
+## `CursorScene`
+
+**Header:** `src/Scenes/Media/CursorScene.h`  
+**Inherits:** `Scene`
+
+`CursorScene` renders a mouse cursor overlay — useful for tutorial-style videos where you want to show a cursor pointing at elements. All visual parameters (cursor position, visibility, style) are controlled through `manager`.
+
+### Constructor
+
+```cpp
+CursorScene(const vec2& dimensions = vec2(1, 1));
+```
+
+### Typical Usage
+
+```cpp
+#include "Scenes/Media/CursorScene.h"
+#include "Scenes/Common/CompositeScene.h"
+
+CompositeScene cs;
+// ... add other scenes ...
+auto cursor = make_shared<CursorScene>();
+cs.add_scene(cursor, "cursor");
+
+// Animate the cursor to a position
+cursor->manager.transition(MICRO, "cursor_x", ".7");
+cursor->manager.transition(MICRO, "cursor_y", ".3");
+```
+
+---
+
+## `StateSliderScene`
+
+**Header:** `src/Scenes/Media/StateSliderScene.h`  
+**Inherits:** `Scene`
+
+`StateSliderScene` renders a visual slider widget that displays the current value of a named state variable. It is intended as a debugging or pedagogical overlay — ideal for showing the viewer the numeric value of a parameter as it animates.
+
+### Constructor
+
+```cpp
+StateSliderScene(
+    const string& vn,       // Variable name to read from state (e.g. "zoom")
+    const string& dn,       // Display name shown on the slider label
+    double min_val,         // Minimum value for the slider range
+    double max_val,         // Maximum value for the slider range
+    const vec2& dimensions = vec2(1, 1)
+);
+```
+
+### Example
+
+```cpp
+#include "Scenes/Media/StateSliderScene.h"
+#include "Scenes/Common/CompositeScene.h"
+#include "Scenes/Math/MandelbrotScene.h"
+
+CompositeScene cs;
+auto ms = make_shared<MandelbrotScene>();
+auto slider = make_shared<StateSliderScene>("zoom", "Zoom", -2.0, 5.0);
+
+cs.add_scene(ms, "ms");
+cs.add_scene(slider, "slider", vec2(0.15, 0.9));
+```
+
+<Note>
+  `StateSliderScene` reads from the scene's own `state` map. To track a variable from a sibling scene, use `stage_publish_to_global` on that scene combined with a matching state equation on the slider's `manager`.
+</Note>
+
+---
+
+## `MidiSoundScene`
+
+**Header:** `src/Scenes/Media/MidiSoundScene.h`  
+**Inherits:** `Scene`
+
+`MidiSoundScene` is primarily an audio scene — its visual output is a minimal waveform trace — that plays discrete musical notes and a continuous drone, recording them into the MIDI output track. It is useful for creating synchronized music visualisations.
+
+### Constructor
+
+```cpp
+MidiSoundScene(const vec2& dimensions = vec2(1, 1));
+```
+
+### Playing Notes
+
+```cpp
+// Schedule a discrete note at an absolute time
+void play_note(
+    double t_seconds,       // Absolute time in the video (seconds)
+    double frequency_hz,    // Pitch in Hz
+    double volume,          // Volume (0.0–1.0)
+    const string& voice = "melody"  // MIDI track name
+);
+```
+
+Notes are recorded into the MIDI writer and also visually traced as marks in the scene's render output.
+
+### Example
+
+```cpp
+#include "Scenes/Media/MidiSoundScene.h"
+
+void render_video() {
+    MidiSoundScene sound;
+
+    // Schedule a C4 major arpeggio
+    sound.play_note(0.0, 261.63, 0.8);   // C4
+    sound.play_note(0.5, 329.63, 0.8);   // E4
+    sound.play_note(1.0, 392.00, 0.8);   // G4
+
+    stage_macroblock(SilenceBlock(3), 3);
+    sound.render_microblock();
+    sound.render_microblock();
+    sound.render_microblock();
+}
+```
+
+---
+
+## Summary Table
+
+| Scene | Header | Key constructor args | Primary purpose |
+|---|---|---|---|
+| `LatexScene` | `Media/LatexScene.h` | `string latex` | Rendered & animated math equations |
+| `PngScene` | `Media/PngScene.h` | `string pn` | Static PNG image display |
+| `Mp4Scene` | `Media/Mp4Scene.h` | `vector<string> filenames, double speed, Mp4EndBehavior` | Video file playback |
+| `WhitePaperScene` | `Media/WhitePaperScene.h` | `string prefix, string author, vector<int> pages` | Scrolling paper pages |
+| `CursorScene` | `Media/CursorScene.h` | _(none)_ | Mouse cursor overlay |
+| `StateSliderScene` | `Media/StateSliderScene.h` | `string varName, string displayName, double min, double max` | Animated value readout widget |
+| `MidiSoundScene` | `Media/MidiSoundScene.h` | _(none)_ | Musical note playback with visual trace |

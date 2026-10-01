@@ -1,0 +1,120 @@
+---
+title: "SwapTube on Windows: WSL2 Setup and CUDA Rendering"
+sidebarTitle: "WSL2 Setup"
+description: "Full guide for Windows users: installing WSL2, Ubuntu dependencies, cloning into the Linux filesystem, building MicroTeX, and CUDA performance notes."
+---
+
+SwapTube is developed on Linux, but Windows users can run it — GPU included — through WSL2 (Windows Subsystem for Linux 2). WSL2 exposes the host's NVIDIA GPU to the Linux environment via the Windows driver, so CUDA-accelerated rendering works without installing a separate Linux driver. This guide covers every step from a fresh Windows machine to a running render, along with the two important behavioral differences to keep in mind.
+
+<Steps>
+  <Step title="Install WSL2 and Ubuntu">
+    Open an **elevated PowerShell** (right-click → Run as administrator) and run:
+
+    ```powershell
+    wsl --install -d Ubuntu
+    ```
+
+    Then reboot. After rebooting, Ubuntu will complete its first-time setup and prompt you to create a Unix username and password.
+  </Step>
+
+  <Step title="Install dependencies inside Ubuntu">
+    Open your Ubuntu shell and run the following single command to install all of SwapTube's system dependencies:
+
+    ```bash
+    sudo apt update && sudo apt install -y \
+        cmake ninja-build gnuplot ffmpeg pkg-config g++ \
+        libswscale-dev libavcodec-dev libavformat-dev libavdevice-dev \
+        libavutil-dev libavfilter-dev libswresample-dev \
+        librsvg2-dev libglib2.0-dev libcairo2-dev libpng-dev libgdk-pixbuf-2.0-dev \
+        nvidia-cuda-toolkit mpv
+    ```
+
+    <Warning>
+    Install **only** the CUDA toolkit package listed above. Do **not** install a full Linux NVIDIA driver package inside the WSL distro. WSL2 delivers GPU access through `/usr/lib/wsl/lib` via the Windows NVIDIA driver; installing a Linux driver package inside Ubuntu will break that bridge. Confirm that the GPU is visible by running `nvidia-smi` — it should print your GPU model and the Windows driver version.
+    </Warning>
+  </Step>
+
+  <Step title="Clone into the Linux filesystem">
+    ```bash
+    git clone https://github.com/2swap/swaptube.git ~/swaptube
+    cd ~/swaptube
+    ```
+
+    <Note>
+    Clone into your Linux home directory (`~`), **not** into `/mnt/c/` or any other path under `/mnt/`. Small-file I/O across the Windows–Linux filesystem boundary is roughly 75× slower than native Linux I/O, and SwapTube writes one PNG frame file per frame during certain operations. Cloning into `/mnt/c/` can turn a fast render into an hours-long one.
+    </Note>
+  </Step>
+
+  <Step title="Build MicroTeX">
+    The first run of `go.sh` checks for a MicroTeX build at `../MicroTeX-master/build/LaTeX`. If it is missing, the script prints install instructions and offers to clone and build it automatically:
+
+    ```
+    Would you like to automatically re-install MicroTeX now? [y/N]:
+    ```
+
+    Type `y` and press Enter. The script will:
+
+    1. Clone `https://github.com/NanoMichael/MicroTeX.git` into `../MicroTeX-master` alongside your SwapTube checkout.
+    2. Run `cmake ..` inside `MicroTeX-master/build/`.
+    3. Build with `make -j$(nproc)`.
+
+    If a package is missing during the MicroTeX build, `go.sh` prints a hint. If `gtksourceviewmm-3.0` cannot be installed from the package manager, the README points to a build-from-source workaround at the provided GitHub issue link.
+  </Step>
+
+  <Step title="Run your first render">
+    ```bash
+    ./go.sh MandelbrotDemo 1920 1080 30
+    ```
+
+    `go.sh` compiles the project with CMake and Ninja, runs the mandatory smoketest at 320×180, then renders the full video at 1920×1080 at 30 fps. The output lands in `out/MandelbrotDemo/<timestamp>/Video.mkv`.
+
+    <Tip>
+    For a faster first test, render at a lower resolution:
+
+    ```bash
+    ./go.sh MandelbrotDemo 640 360 30
+    ```
+    </Tip>
+  </Step>
+</Steps>
+
+## WSL2 behavioral differences
+
+Two things work slightly differently under WSL2 compared to native Linux.
+
+### Memory limits
+
+WSL2 defaults to allocating half your total system RAM to the virtual machine. A large render that builds many scene objects or uses high-resolution output may exhaust this limit. To raise it, create or edit the file `C:\Users\<YourUsername>\.wslconfig` in Windows and add:
+
+```ini
+[wsl2]
+memory=12GB
+```
+
+Replace `12GB` with however much you want to allocate. Restart WSL2 afterward (`wsl --shutdown` in PowerShell, then reopen Ubuntu).
+
+### CUDA performance
+
+CUDA kernel launches in WSL2 cross a paravirtualization boundary between the Linux VM and the Windows hypervisor. This costs a fixed overhead of a couple of milliseconds per frame. For short renders the difference is negligible, but for very long videos at high framerates the cumulative overhead is measurable. Native Linux will always be faster for the same hardware; WSL2 is a convenience trade-off, not a performance-equivalent environment.
+
+## Summary of the full workflow
+
+```bash
+# 1. (PowerShell, elevated, one-time) Install WSL2 + Ubuntu and reboot
+wsl --install -d Ubuntu
+
+# 2. (Ubuntu shell, one-time) Install all system dependencies
+sudo apt update && sudo apt install -y \
+    cmake ninja-build gnuplot ffmpeg pkg-config g++ \
+    libswscale-dev libavcodec-dev libavformat-dev libavdevice-dev \
+    libavutil-dev libavfilter-dev libswresample-dev \
+    librsvg2-dev libglib2.0-dev libcairo2-dev libpng-dev libgdk-pixbuf-2.0-dev \
+    nvidia-cuda-toolkit mpv
+
+# 3. (Ubuntu shell, one-time) Clone into the Linux filesystem
+git clone https://github.com/2swap/swaptube.git ~/swaptube
+cd ~/swaptube
+
+# 4. (Ubuntu shell) Run — accept the MicroTeX install prompt on first run
+./go.sh MandelbrotDemo 1920 1080 30
+```

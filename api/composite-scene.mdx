@@ -1,0 +1,263 @@
+---
+title: "CompositeScene — Layered Scene Compositor API Reference"
+sidebarTitle: "CompositeScene"
+description: "API reference for CompositeScene: layer child scenes with GPU alpha compositing; child position, angle, and opacity are all animated via the StateManager."
+---
+
+`CompositeScene` is the primary layout tool in SwapTube. It holds any number of named child scenes and composites them onto its own GPU pixel buffer in a defined render order, using a CUDA overlay kernel that respects per-child position, rotation angle, and opacity. Every child's transform properties are stored as regular `StateManager` variables, so they participate in the full transition and interpolation system—you can smoothly pan, rotate, or fade any child scene simply by calling `manager.transition()`.
+
+`CompositeScene` extends `SuperScene`, which in turn extends `Scene`. You can nest `CompositeScene` instances arbitrarily: a child scene can itself be a `CompositeScene`.
+
+<Note>
+  Child scenes are always rendered in the order they were added (back to front). Use `move_to_front()` and `move_to_back()` (inherited from `SuperScene`) to change z-ordering at runtime.
+</Note>
+
+---
+
+## Constructor
+
+```cpp
+CompositeScene(const vec2& dimensions = vec2(1, 1));
+```
+
+<ParamField path="dimensions" type="vec2" default="vec2(1, 1)">
+  Fractional size of the compositor canvas relative to the global video resolution. Passed directly to `SuperScene` and `Scene`. Both components must be in `(0, 1]`.
+</ParamField>
+
+---
+
+## Managing Child Scenes
+
+### `add_scene()`
+
+```cpp
+void add_scene(
+    shared_ptr<Scene> sc,
+    const string& state_name,
+    const vec2& pos = vec2(.5, .5),
+    bool behind = false,
+    int insert_position = -1
+);
+```
+
+Adds a child scene to the compositor and registers its transform variables with the `StateManager`. After this call, six state variables are available on the parent `CompositeScene`:
+
+| Variable | Initial value | Meaning |
+|---|---|---|
+| `<state_name>.x` | `pos.x` | Horizontal center as a fraction of the compositor width |
+| `<state_name>.y` | `pos.y` | Vertical center as a fraction of the compositor height |
+| `<state_name>.w` | child `w` | Inherited from the child scene's own `w` state |
+| `<state_name>.h` | child `h` | Inherited from the child scene's own `h` state |
+| `<state_name>.angle` | `0` | Rotation in radians, applied around the center point |
+| `<state_name>.opacity` | `1` | Composite opacity in `[0, 1]` |
+
+<ParamField path="sc" type="shared_ptr<Scene>" required>
+  Shared pointer to the child scene to add. Must not be `nullptr`.
+</ParamField>
+
+<ParamField path="state_name" type="string" required>
+  Unique identifier for this child within the compositor. Used as the prefix for all auto-generated state variables (`<state_name>.x`, etc.) and as the key for `slide_subscene()`, `fade_subscene()`, and other `SuperScene` methods. Duplicate names throw a `std::runtime_error`.
+</ParamField>
+
+<ParamField path="pos" type="vec2" default="vec2(0.5, 0.5)">
+  Initial center position of the child scene expressed as fractions of the compositor's pixel dimensions. `vec2(0.5, 0.5)` centers the child on the canvas.
+</ParamField>
+
+<ParamField path="behind" type="bool" default="false">
+  When `true`, the child is pushed to the back of the render order (drawn first, appearing behind all existing children). When `false`, it is appended to the front (drawn last, on top).
+</ParamField>
+
+<ParamField path="insert_position" type="int" default="-1">
+  If `>= 0`, inserts the child at this specific index in the render order instead of using the `behind` flag. Index `0` is the back of the stack.
+</ParamField>
+
+### `add_scene_fade_in()`
+
+```cpp
+void add_scene_fade_in(
+    const TransitionType tt,
+    shared_ptr<Scene> sc,
+    const string& state_name,
+    const vec2& pos = vec2(.5, .5),
+    double opa = 1,
+    bool behind = false,
+    int insert_position = -1
+);
+```
+
+Convenience wrapper around `add_scene()` that immediately schedules an opacity transition. The child is added with `opacity = 0` and a transition of type `tt` is registered to bring the opacity to `opa` by the end of the current block. This produces a smooth fade-in over the next rendered microblock.
+
+<ParamField path="tt" type="TransitionType" required>
+  Transition type to use for the fade-in: `MICRO` fades within one microblock; `MACRO` fades across the whole macroblock.
+</ParamField>
+
+<ParamField path="sc" type="shared_ptr<Scene>" required>
+  Child scene to add and fade in.
+</ParamField>
+
+<ParamField path="state_name" type="string" required>
+  Unique identifier for the child scene (same rules as `add_scene()`).
+</ParamField>
+
+<ParamField path="pos" type="vec2" default="vec2(0.5, 0.5)">
+  Initial center position as fractions of the compositor dimensions.
+</ParamField>
+
+<ParamField path="opa" type="double" default="1">
+  Target opacity at the end of the fade-in, in `[0, 1]`.
+</ParamField>
+
+<ParamField path="behind" type="bool" default="false">
+  Render-order placement (same semantics as `add_scene()`).
+</ParamField>
+
+<ParamField path="insert_position" type="int" default="-1">
+  Explicit render-order index (same semantics as `add_scene()`).
+</ParamField>
+
+---
+
+## Animating Child Transforms
+
+### `slide_subscene()`
+
+```cpp
+void slide_subscene(const TransitionType tt, const string& name, const vec2& delta);
+```
+
+Schedules a transition that shifts the named child's position by `delta`. The new target is the current position *plus* the delta; it does not set an absolute destination. This makes it easy to queue up sequential moves without tracking the child's accumulated position manually.
+
+<ParamField path="tt" type="TransitionType" required>
+  `MICRO` or `MACRO` — controls which block boundary triggers the snap to the new position.
+</ParamField>
+
+<ParamField path="name" type="string" required>
+  The `state_name` that was passed to `add_scene()`.
+</ParamField>
+
+<ParamField path="delta" type="vec2" required>
+  Amount to add to the child's current `.x` and `.y` state variables. Both components are in the same coordinate space as the position (fractions of the compositor's pixel dimensions).
+</ParamField>
+
+---
+
+## Auto-Generated Per-Child State Variables
+
+When you call `add_scene("ms", ...)`, the following variables are created in the compositor's `StateManager` and can be targeted by `manager.transition()` at any time:
+
+<Expandable title="Per-child state variables">
+
+| Variable | Type | Default | Description |
+|---|---|---|---|
+| `<name>.x` | `double` | `pos.x` | Horizontal center of the child, as a fraction of the compositor width. `0` is the left edge, `1` is the right edge. |
+| `<name>.y` | `double` | `pos.y` | Vertical center of the child, as a fraction of the compositor height. `0` is the top edge, `1` is the bottom edge. |
+| `<name>.angle` | `double` | `0` | Rotation applied to the child about its center, in radians. |
+| `<name>.opacity` | `double` | `1` | Composite opacity. Values below `0.001` cause the child to be skipped entirely during `draw()`. |
+
+Note: `<name>.w` and `<name>.h` are owned by the child scene's own `StateManager` and are inherited through the parent–child link, not set directly on the compositor.
+
+</Expandable>
+
+You can animate any of these variables with `manager.transition()`:
+
+```cpp
+// Animate the child "ms" to the right side of the screen over one microblock
+cs.manager.transition(MICRO, "ms.x", "0.75");
+
+// Spin the child continuously based on time
+cs.manager.transition(MICRO, "ms.angle", "{t}");
+
+// Fade a child out
+cs.manager.transition(MICRO, "ms.opacity", "0");
+```
+
+---
+
+## Inherited SuperScene Methods
+
+`CompositeScene` inherits the full management API from `SuperScene`:
+
+| Method | Description |
+|---|---|
+| `remove_subscene(name)` | Detaches and destroys the named child. |
+| `remove_all_subscenes()` | Removes every child. |
+| `remove_all_subscenes_except(name)` | Removes every child except the named one. |
+| `fade_subscene(tt, name, opacity)` | Transitions the named child's opacity to `opacity`. |
+| `fade_all_subscenes(tt, opacity)` | Fades every child to the same opacity. |
+| `fade_all_subscenes_except(tt, name, opacity)` | Fades every child except `name`. |
+| `move_to_front(name)` | Moves the child to the top of the render stack (drawn last). |
+| `move_to_back(name)` | Moves the child to the bottom of the render stack (drawn first). |
+| `get_subscene_pointer(name)` | Returns the `shared_ptr<Scene>` for the named child. |
+
+---
+
+## Worked Example — CompositeDemo
+
+The following example is drawn from `src/Projects/Demos/CompositeDemo.cpp`. It demonstrates adding a `MandelbrotScene` as a child, animating its size via the child's own `StateManager`, then sliding and rotating it via the parent compositor's state variables.
+
+```cpp
+#include "Scenes/Common/CompositeScene.h"
+#include "Scenes/Math/MandelbrotScene.h"
+
+void render_video() {
+    CompositeScene cs;
+    stage_macroblock(SilenceBlock(5), 5);
+
+    // Add a full-size Mandelbrot child, centered on the canvas
+    shared_ptr<MandelbrotScene> ms = make_shared<MandelbrotScene>();
+    cs.add_scene(ms, "ms");
+
+    // Microblock 1: render the scene as-is
+    cs.render_microblock();
+
+    // Microblock 2: animate the child's own w/h (oscillating size)
+    ms->manager.transition(MICRO, "w", "{t} 3 * sin .3 * .5 +");
+    ms->manager.transition(MICRO, "h", "{t} 5 * cos .3 * .5 +");
+    cs.render_microblock();
+
+    // Microblock 3: snap w/h back to 0.5
+    ms->manager.transition(MICRO, "w", ".5");
+    ms->manager.transition(MICRO, "h", ".5");
+    cs.render_microblock();
+
+    // Microblock 4: move the child in circles using compositor state
+    cs.manager.transition(MICRO, "ms.x", "{t} sin .5 * .5 +");
+    cs.manager.transition(MICRO, "ms.y", "{t} cos .5 * .5 +");
+    cs.render_microblock();
+
+    // Microblock 5: spin the child
+    cs.manager.transition(MICRO, "ms.angle", "{t}");
+    cs.render_microblock();
+}
+```
+
+<Tip>
+  Animating `ms.x` / `ms.y` on the *compositor* moves the child around the canvas. Animating `ms->manager`'s `w` / `h` resizes the child's own pixel buffer. Both can happen simultaneously.
+</Tip>
+
+---
+
+## Multi-Scene Layout Example
+
+```cpp
+CompositeScene cs;
+
+// Left panel at 1/6 from left edge, full height
+auto left = make_shared<SomeScene>(vec2(1.0/3, 1.0));
+cs.add_scene(left, "left", vec2(1.0/6, 0.5));
+
+// Center panel
+auto center = make_shared<SomeScene>(vec2(1.0/3, 1.0));
+cs.add_scene(center, "center", vec2(0.5, 0.5));
+
+// Right panel at 5/6 from left edge
+auto right = make_shared<SomeScene>(vec2(1.0/3, 1.0));
+cs.add_scene(right, "right", vec2(5.0/6, 0.5));
+
+stage_macroblock(SilenceBlock(4), 2);
+cs.render_microblock();
+
+// Slide the left panel off screen to the left
+cs.slide_subscene(MICRO, "left", vec2(-1.0/3, 0.0));
+cs.render_microblock();
+```

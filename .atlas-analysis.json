@@ -1,0 +1,117 @@
+{
+  "projectType": "framework",
+  "projectName": "SwapTube",
+  "projectDescription": "A GPU-accelerated C++/CUDA video rendering framework for producing mathematical YouTube videos, built on top of FFmpeg with a scene-based compositing system, declarative state animation, and automatic time management.",
+  "theme": "aspen",
+  "primaryColor": "#0f0f0f",
+  "lightColor": "#ff0033",
+  "darkColor": "#fc7494",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "installation",
+              "quickstart"
+            ]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "concepts/time-control",
+              "concepts/state-manager",
+              "concepts/smoketesting"
+            ]
+          },
+          {
+            "group": "Scenes",
+            "pages": [
+              "scenes/overview",
+              "scenes/common-scenes",
+              "scenes/math-scenes",
+              "scenes/media-scenes",
+              "scenes/physics-scenes"
+            ]
+          },
+          {
+            "group": "Guides",
+            "pages": [
+              "guides/creating-a-project",
+              "guides/audio-and-narration",
+              "guides/docker",
+              "guides/wsl"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "Timeline API",
+            "pages": [
+              "api/macroblocks",
+              "api/microblocks"
+            ]
+          },
+          {
+            "group": "State API",
+            "pages": [
+              "api/state-manager",
+              "api/global-state"
+            ]
+          },
+          {
+            "group": "Scene API",
+            "pages": [
+              "api/scene-base",
+              "api/composite-scene",
+              "api/coordinate-scene",
+              "api/threed-scene"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "GPU-accelerated rendering via CUDA (NVIDIA) and HIP (AMD)",
+    "Scene-based compositing system with reusable math, media, and physics scenes",
+    "Declarative StateManager with dependency-graph-driven frame interpolation",
+    "Two-tier time control: Macroblocks (audio-aligned) and Microblocks (visual transitions)",
+    "Mandatory smoketest pass before every full render",
+    "Built-in LaTeX rendering via MicroTeX and SVG pipeline",
+    "FFmpeg-based video/audio encoding with subtitle output",
+    "30+ built-in scene types: Mandelbrot, Rubik's cube, graph spread, pendulum, geodesics, and more",
+    "Docker and WSL2 support for cross-platform use"
+  ],
+  "publicApiSurface": [
+    "stage_macroblock(block)",
+    "stage_macroblock(block, n)",
+    "Scene::render_microblock()",
+    "StateManager::set(variable, equation)",
+    "StateManager::transition(TransitionType, variable, equation)",
+    "StateManager::close_transitions(TransitionType)",
+    "set_for_real(bool)",
+    "CompositeScene::add_scene(shared_ptr<Scene>, name, pos)",
+    "CompositeScene::add_scene_fade_in(TransitionType, shared_ptr<Scene>, name, pos, opacity)",
+    "CompositeScene::slide_subscene(TransitionType, name, delta)",
+    "SilenceBlock(duration_seconds)",
+    "FileBlock(subtitle_text)",
+    "GeneratedBlock(leftBuffer, rightBuffer)",
+    "CompositeBlock(blockA, blockB)",
+    "TransitionType::MICRO",
+    "TransitionType::MACRO",
+    "LatexScene::begin_latex_transition(TransitionType, latex_string)",
+    "LatexScene::jump_latex(string)",
+    "ThreeDimensionScene::add_point(Point)",
+    "ThreeDimensionScene::add_line(Line)",
+    "./go.sh <ProjectName> <Width> <Height> <Framerate> [flags]",
+    "./test.sh",
+    "./record_audios.py"
+  ]
+}

@@ -1,0 +1,241 @@
+---
+title: "Scene — SwapTube Abstract Base Class Full API Reference"
+sidebarTitle: "Scene Base"
+description: "Complete reference for the Scene base class: constructor, lifecycle hooks, GPU pixel buffer access, dimension helpers, and the public StateManager member."
+---
+
+Every renderable object in SwapTube inherits from `Scene`. It owns a GPU pixel buffer allocated at construction time, manages a `StateManager` that drives all animated properties, and exposes the `render_microblock()` / `update()` / `query()` lifecycle that the timeline engine calls to produce video frames. Concrete scene classes must implement the pure-virtual `draw()` method; everything else—frame pacing, pixel export, global state publishing—is handled here in the base.
+
+<Note>
+  `Scene` is an abstract class. You cannot instantiate it directly. Use a concrete subclass such as `CompositeScene`, `CoordinateScene`, `ThreeDimensionScene`, or any of the math-specific scenes.
+</Note>
+
+---
+
+## Constructor
+
+<ParamField path="dimensions" type="vec2" default="vec2(1, 1)">
+  Fractional size of the scene relative to the global video resolution. Both components are in the range `(0, 1]`. For example, `vec2(0.5, 0.5)` creates a scene whose GPU pixel buffer is one quarter of the full video area. The values are stored in the `StateManager` as the state variables `w` and `h`.
+</ParamField>
+
+```cpp
+Scene(const vec2& dimensions = vec2(1, 1));
+```
+
+The constructor allocates the `DevicePointer` (`gpu_pix`) on the GPU. Dimensions of `vec2(1, 1)` (the default) match the full video output resolution as configured by the global video settings.
+
+---
+
+## Pure-Virtual Interface
+
+### `draw()`
+
+```cpp
+virtual void draw() = 0;
+```
+
+Called once per frame inside `query()` after the pixel buffer has been zeroed by CUDA. Subclasses write all rendering logic here. The GPU pixel buffer is accessible via the protected `gpu_pix` member.
+
+<Warning>
+  Never call `draw()` directly from project code. Always go through `query()` or `render_microblock()`, which handle state updates and buffer zeroing before invoking `draw()`.
+</Warning>
+
+---
+
+## Lifecycle Methods
+
+### `render_microblock()`
+
+```cpp
+void render_microblock();
+```
+
+Renders all video frames that belong to the current microblock, then advances internal counters and fires transition-close callbacks. This is the primary method you call from `render_video()` after staging a macroblock.
+
+In smoketest mode `render_microblock()` renders exactly one frame and records the microblock in the timeline plan instead of writing video output.
+
+<Warning>
+  `render_microblock()` will throw a `std::runtime_error` if it is called without a preceding `stage_macroblock()`, or if more microblocks are rendered than were declared in the macroblock.
+</Warning>
+
+### `update()`
+
+```cpp
+void update();
+```
+
+Advances the scene's state for the current frame. Calls `update_state()` to evaluate all `StateManager` expressions, then `change_data()` to propagate those results to GPU data objects, then `update_state()` again (state changes are idempotent so the second pass resolves any cross-dependencies). Called automatically by `query()` if the scene has not been updated since the last query.
+
+### `query()`
+
+```cpp
+uint32_t* query();
+```
+
+Returns a pointer to the GPU pixel buffer. If the scene has not been updated since the last call, `update()` is invoked first. Then, if the project is in real-render mode, the buffer is zeroed via CUDA and `draw()` is called.
+
+<ResponseField name="return" type="uint32_t*">
+  Raw pointer to the ARGB pixel buffer residing in GPU (device) memory. Each element is a packed 32-bit ARGB color. The buffer contains `get_width() * get_height()` elements.
+</ResponseField>
+
+<Note>
+  The returned pointer is device memory. Do not dereference it on the CPU. Pass it to CUDA kernels or copy it to host memory with `export_frame()`.
+</Note>
+
+---
+
+## Dimension Helpers
+
+### `get_width()`
+
+```cpp
+int get_width();
+```
+
+Returns the scene width in pixels, computed as `VIDEO_WIDTH * state["w"]`.
+
+<ResponseField name="return" type="int">
+  Width of the scene's pixel buffer in pixels.
+</ResponseField>
+
+### `get_height()`
+
+```cpp
+int get_height();
+```
+
+Returns the scene height in pixels, computed as `VIDEO_HEIGHT * state["h"]`.
+
+<ResponseField name="return" type="int">
+  Height of the scene's pixel buffer in pixels.
+</ResponseField>
+
+### `get_width_height()`
+
+```cpp
+ivec2 get_width_height();
+```
+
+Returns both dimensions packed into an `ivec2`.
+
+<ResponseField name="return" type="ivec2">
+  `ivec2(get_width(), get_height())`.
+</ResponseField>
+
+### `get_geom_mean_size()`
+
+```cpp
+double get_geom_mean_size();
+```
+
+Returns the geometric mean of the scene's pixel dimensions: `sqrt(width * height)`. Useful for scale-invariant sizing of strokes, fonts, and point radii.
+
+<ResponseField name="return" type="double">
+  Geometric mean of width and height in pixels.
+</ResponseField>
+
+---
+
+## I/O
+
+### `export_frame()`
+
+```cpp
+void export_frame(const string& filename, int scaledown = 1);
+```
+
+Copies the GPU pixel buffer to the CPU and writes a PNG to `io_out/frames/frame_<filename>.png`.
+
+<ParamField path="filename" type="string" required>
+  Base name for the output file. The full path becomes `io_out/frames/frame_<filename>.png`.
+</ParamField>
+
+<ParamField path="scaledown" type="int" default="1">
+  Integer factor by which to down-sample the image before writing. A value of `2` halves the width and height. Must be a positive integer.
+</ParamField>
+
+<Tip>
+  `export_frame()` is primarily for debugging. Video frames are written to the output stream automatically by `render_microblock()` via the internal writer pipeline.
+</Tip>
+
+---
+
+## Public Members
+
+### `manager`
+
+```cpp
+StateManager manager;
+```
+
+The scene's `StateManager` instance. All animated numeric properties—including built-in ones like `w`, `h`, and the child-scene position variables added by `CompositeScene`—are stored and evaluated here. Use `manager.set()` to initialize variables, `manager.transition()` to schedule animated changes, and `manager.get_state()` to read the current evaluated snapshot.
+
+### `stage_publish_to_global`
+
+```cpp
+unordered_map<string, string> stage_publish_to_global;
+```
+
+An optional mapping from local state variable names to global state variable names. After each `update_state()` call, every entry in this map is written to the global state. This allows a scene to broadcast values (such as the current camera position) for consumption by other scenes or the MIDI writer.
+
+---
+
+## Virtual Hooks
+
+### `on_end_transition_extra_behavior()`
+
+```cpp
+virtual void on_end_transition_extra_behavior(const TransitionType tt);
+```
+
+Called at the end of every micro- or macro-transition, after `StateManager::close_transitions()` has snapped all in-flight interpolations to their target values. The base implementation is a no-op. Override this in subclasses to perform custom cleanup (e.g., `SuperScene` uses it to propagate the transition-end event to all child scenes).
+
+<ParamField path="tt" type="TransitionType" required>
+  The type of transition that just ended. `MICRO` fires at the end of every `render_microblock()` call; `MACRO` fires when the last microblock of a macroblock is rendered.
+</ParamField>
+
+### `change_data()`
+
+```cpp
+virtual void change_data();
+```
+
+Called during `update()` between the two `update_state()` passes. The base implementation ticks the `DevicePointer` to resize the GPU buffer if the scene dimensions have changed. Subclasses override this to rebuild GPU data structures (meshes, lookup tables, etc.) that depend on the current state.
+
+---
+
+## Protected Members
+
+| Member | Type | Description |
+|---|---|---|
+| `gpu_pix` | `DevicePointer` | GPU pixel buffer. Resize is managed by `change_data()`. |
+| `state` | `StateReturn` | Snapshot of evaluated state variables, refreshed by `update_state()`. |
+
+---
+
+## Example: Minimal Concrete Scene
+
+```cpp
+#include "Scene.h"
+
+class SolidColorScene : public Scene {
+public:
+    SolidColorScene(const vec2& dimensions = vec2(1, 1))
+        : Scene(dimensions) {
+        manager.set("color", "0xffff0000"); // opaque red
+    }
+
+    void draw() override {
+        // CUDA kernel that fills gpu_pix with state["color"]
+        cuda_fill_solid(gpu_pix.get_ptr(), get_width_height(),
+                        static_cast<uint32_t>(state["color"]));
+    }
+};
+```
+
+```cpp
+// In render_video():
+SolidColorScene sc;
+stage_macroblock(SilenceBlock(3), 1);
+sc.render_microblock();
+```

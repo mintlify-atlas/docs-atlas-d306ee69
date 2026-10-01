@@ -1,0 +1,190 @@
+---
+title: "Audio and Narration in SwapTube Videos: Full Guide"
+sidebarTitle: "Audio & Narration"
+description: "How SwapTube handles narration, silence, generated audio, the record_list.tsv workflow, record_audios.py, and the -a and -x flags."
+---
+
+Audio in SwapTube is driven by **macroblocks** — every macroblock carries exactly one audio segment, and the duration of that segment determines how many video frames are produced for the microblocks nested inside it. This design means you never manually time narration against animations: you write the script inline with the visuals, and SwapTube keeps everything in sync automatically. This guide covers every macroblock type, the recording workflow, and the command-line flags that affect audio output.
+
+## The four macroblock types
+
+All macroblock classes are declared in `src/Core/Macroblock.h` and can be used directly in any project file without an extra include.
+
+<Tabs>
+  <Tab title="FileBlock">
+    `FileBlock` is the primary narration type. Pass it the subtitle text you want to speak, and SwapTube derives a `.wav` filename from that text automatically using `sanitize_filename()` — spaces become underscores, and non-alphanumeric characters are removed:
+
+    ```cpp
+    stage_macroblock(FileBlock("The Mandelbrot set is defined by a simple recurrence."));
+    myScene.render_microblock();
+    ```
+
+    The derived filename for the example above would be `The_Mandelbrot_set_is_defined_by_a_simple_recurrence.wav`. SwapTube looks for this file at `media/YourProject/<filename>` when encoding the full render.
+
+    During the smoketest, `FileBlock` writes the filename and subtitle text as a tab-separated line into `media/YourProject/record_list.tsv`. That file is what `record_audios.py` reads when you record your narration.
+
+    The duration of the macroblock equals the length of the loaded `.wav` file, so the video frames are automatically timed to match however long you actually spoke.
+  </Tab>
+  <Tab title="SilenceBlock">
+    `SilenceBlock` produces a fixed-duration gap with no audio. Pass it a duration in seconds:
+
+    ```cpp
+    stage_macroblock(SilenceBlock(2.5));
+    myScene.render_microblock();
+    ```
+
+    Use `SilenceBlock` for title cards, pauses, or any section where you do not want narration.
+  </Tab>
+  <Tab title="GeneratedBlock">
+    `GeneratedBlock` plays a programmatically-constructed audio signal. You supply pre-filled left and right sample buffers of type `vector<int32_t>`:
+
+    ```cpp
+    #include "../IO/AudioWriter.h"
+    #include "../IO/Writer.h"
+
+    void render_video() {
+        CompositeScene cs;
+
+        vector<sample_t> left;
+        vector<sample_t> right;
+
+        // Build the buffers using the project's sample rate.
+        int total_samples = 3 * get_audio_samplerate_hz(); // 3 seconds
+        for (int i = 0; i < total_samples; i++) {
+            float f = 0.3f * sinf(i * 440.0f * 2.0f * M_PI / get_audio_samplerate_hz());
+            sample_t val = float_to_sample(f);
+            left.push_back(val);
+            right.push_back(val);
+        }
+
+        stage_macroblock(GeneratedBlock(left, right), 1);
+        cs.render_microblock();
+    }
+    ```
+
+    The duration of the macroblock is derived from the length of the buffers divided by the sample rate. Both buffers must have the same size.
+  </Tab>
+  <Tab title="CompositeBlock">
+    `CompositeBlock` concatenates two macroblocks end-to-end into a single logical macroblock. The total duration is the sum of both parts, and `write_shtooka()` is called on each — meaning both `FileBlock` entries will appear in `record_list.tsv`:
+
+    ```cpp
+    stage_macroblock(
+        CompositeBlock(
+            FileBlock("First sentence of narration."),
+            FileBlock("Second sentence, played immediately after.")
+        )
+    );
+    myScene.render_microblock();
+    myScene.render_microblock();
+    ```
+
+    This is useful when two recorded clips should be treated as one continuous audio segment but you still want separate `.wav` files for each.
+  </Tab>
+</Tabs>
+
+## Audio sample rate
+
+SwapTube defaults to **48000 Hz** stereo (`int32_t` samples). The sample rate is configured in `go.sh` as the `SAMPLERATE` variable and is passed through to the C++ runtime via `get_audio_samplerate_hz()`. Recording audio at a different sample rate will cause a runtime error when the file is loaded:
+
+```
+Error: Unsupported sample rate: 44100. Expected 48000 Hz.
+```
+
+Always record or export `.wav` files at 48000 Hz. The `record_audios.py` script passes `-ar 48000` to `ffmpeg` automatically, so recordings made through the script are always at the correct rate.
+
+## How audio and video stay in sync
+
+The macroblock's audio duration controls the number of video frames. When a `FileBlock` is used, the frame count equals:
+
+```
+frames = (wav_duration_in_seconds) × (video_framerate_fps)
+```
+
+Those frames are divided evenly across however many `render_microblock()` calls are staged for that macroblock. Increasing the number of microblocks gives each one a shorter frame window; decreasing it gives each one more time. Because the frame count derives from the actual recorded audio length, the video automatically stretches or contracts to match however long you spoke — no manual timing required.
+
+## The record_list.tsv workflow
+
+`record_list.tsv` is the bridge between your C++ script and your microphone. It is generated automatically each time your project runs (including during the smoketest) and lives at:
+
+```
+media/YourProject/record_list.tsv
+```
+
+Each line contains two tab-separated fields: the derived `.wav` filename and the subtitle text:
+
+```
+The_Mandelbrot_set_is_defined_by_a_simple_recurrence.wav	The Mandelbrot set is defined by a simple recurrence.
+Now_lets_zoom_in.wav	Now let's zoom in.
+```
+
+The file is re-written on every run, so running `./go.sh MyProject 640 360 30 -s` (smoketest only) is the fastest way to refresh it after editing your script without waiting for a full render.
+
+## Recording narration with record_audios.py
+
+Once `record_list.tsv` exists, run `record_audios.py` to record all your narration lines in one session:
+
+```bash
+python record_audios.py MyProject
+```
+
+<Steps>
+  <Step title="Device selection">
+    The script lists available ALSA recording devices. If a Blue Yeti microphone is detected it is selected automatically; otherwise you are prompted to choose by number.
+  </Step>
+  <Step title="Pre-recording prompts">
+    The script walks you through a series of reminders (posture, breathing, pacing) before recording begins, each dismissed by pressing Enter.
+  </Step>
+  <Step title="Recording each line">
+    The current subtitle line is displayed along with the next five lines for lookahead. Press **Enter** to stop recording. If the take was bad, press **u** then Enter to discard and re-record.
+  </Step>
+  <Step title="First-take review">
+    After your very first successful recording, the script plays the file back with `ffplay` and asks whether it sounds good before continuing.
+  </Step>
+  <Step title="Skipping existing files">
+    Any `.wav` file that already exists in `media/YourProject/` is skipped automatically, so you can re-run the script after adding new lines without re-recording everything.
+  </Step>
+  <Step title="Archiving old takes">
+    If `.wav` files from a previous session exist, the script offers to archive them into a numbered `archive1/`, `archive2/`, … subdirectory before starting.
+  </Step>
+</Steps>
+
+<Tip>
+If your microphone only supports mono recording, pass `--mono`:
+
+```bash
+python record_audios.py MyProject --mono
+```
+
+The script will apply an ALSA pan filter to duplicate the mono channel to both stereo channels before saving.
+</Tip>
+
+## Audio output flags
+
+`go.sh` accepts two flags that change how audio is handled in the rendered output.
+
+<CodeGroup>
+```bash Disable audio entirely
+./go.sh MyProject 1920 1080 30 -a
+```
+
+```bash Emit separate audio tracks
+./go.sh MyProject 1920 1080 30 -x
+```
+
+```bash Combine flags
+./go.sh MyProject 1920 1080 30 -a -x
+```
+</CodeGroup>
+
+| Flag | Effect |
+|------|--------|
+| `-a` | Excludes all audio (voice narration and sound effects) from the rendered video. The video track is still encoded. Useful for a quick visual check. |
+| `-x` | Emits sound effects and voice narration as their own separate tracks **in addition to** the normal merged track in the output file. |
+
+<Note>
+The `-a` and `-x` flags affect the full render only. The smoketest never encodes audio regardless of these flags.
+</Note>
+
+## Placing audio files manually
+
+If you record narration outside of `record_audios.py` (for example with a DAW), place the `.wav` files in `media/YourProject/` with the exact filenames listed in `record_list.tsv`. SwapTube will find them at render time. Files must be 48000 Hz stereo PCM (format `pcm_s32le`).

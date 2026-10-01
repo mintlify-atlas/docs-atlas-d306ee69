@@ -1,0 +1,135 @@
+---
+title: "Containerized SwapTube: GPU-Accelerated Docker Setup"
+sidebarTitle: "Docker"
+description: "Community-maintained Docker setup for SwapTube: building the CUDA image, volume mounts, GPU passthrough, and the full TLDR workflow."
+---
+
+For users who want all of SwapTube's dependencies bundled into a single reproducible environment, the repository ships a community-contributed `Dockerfile` under `docker/`. The image is built on top of `nvidia/cuda:12.6.0-devel-ubuntu24.04` and pre-installs FFmpeg, MicroTeX, gnuplot, and every graphics and audio library that SwapTube requires, so you do not need to manage those dependencies on your host machine.
+
+<Note>
+This Docker setup is **community-maintained**. 2swap personally builds and runs SwapTube natively and does not use or maintain the container. It is provided as a convenience for Docker users — your mileage may vary.
+</Note>
+
+## Prerequisites
+
+Before starting, make sure you have the following on your host:
+
+- **Docker** with the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html) installed and configured.
+- An NVIDIA GPU whose driver supports CUDA 12.6.
+
+Verify GPU access from Docker before proceeding:
+
+```bash
+docker run --rm --gpus all nvidia/cuda:12.4.1-base-bookworm nvidia-smi
+```
+
+If `nvidia-smi` reports your GPU model and driver version, the toolkit is working correctly.
+
+## TLDR workflow
+
+The full workflow from the `docker/README.md` is reproduced here exactly:
+
+```bash
+docker build -f docker/Dockerfile -t swaptube:cuda ..
+docker volume create swaptube-build
+docker run --rm -it --gpus all \
+  -u $(id -u):$(id -g) \
+  -v "$PWD:/workspace/swaptube" \
+  -v swaptube-build:/workspace/swaptube/build \
+  -w /workspace/swaptube \
+  swaptube:cuda ./go.sh MyProject 640 360
+```
+
+Run all three commands from the **root of your SwapTube checkout** (the directory that contains `go.sh`).
+
+## Step-by-step breakdown
+
+<Steps>
+  <Step title="Build the Docker image">
+    ```bash
+    docker build -f docker/Dockerfile -t swaptube:cuda ..
+    ```
+
+    The build context (`..`) must be the directory *above* `docker/` — i.e., the repository root — because the `Dockerfile` copies the entire SwapTube source tree into the image with `COPY .. /workspace`. This step also clones and compiles MicroTeX inside the image, so the first build takes several minutes.
+
+    The resulting image is tagged `swaptube:cuda`.
+  </Step>
+  <Step title="Create a persistent build-cache volume">
+    ```bash
+    docker volume create swaptube-build
+    ```
+
+    CMake and Ninja write compiled object files and the final `swaptube` binary into the `build/` directory. Mounting this directory as a named volume means incremental rebuilds are fast — the compiled binary persists across container runs without being rebuilt from scratch each time.
+  </Step>
+  <Step title="Run a render">
+    ```bash
+    docker run --rm -it --gpus all \
+      -u $(id -u):$(id -g) \
+      -v "$PWD:/workspace/swaptube" \
+      -v swaptube-build:/workspace/swaptube/build \
+      -w /workspace/swaptube \
+      swaptube:cuda ./go.sh MyProject 640 360
+    ```
+
+    Key flags explained:
+
+    | Flag | Purpose |
+    |------|---------|
+    | `--gpus all` | Passes all host GPUs into the container. Required for CUDA. |
+    | `-u $(id -u):$(id -g)` | Runs the container process as your host user/group so output files are owned by you, not `root`. |
+    | `-v "$PWD:/workspace/swaptube"` | Mounts your repository checkout into the container so your project files and media assets are visible. |
+    | `-v swaptube-build:/workspace/swaptube/build` | Mounts the named volume as the build cache directory. |
+    | `-w /workspace/swaptube` | Sets the working directory so `./go.sh` resolves correctly. |
+    | `--rm` | Removes the container after it exits, keeping your Docker environment clean. |
+  </Step>
+</Steps>
+
+## Volume mounts in detail
+
+The Dockerfile declares two volume mount points:
+
+```dockerfile
+VOLUME ["/workspace/media", "/workspace/out"]
+```
+
+When you bind-mount `$PWD` to `/workspace/swaptube`, both `media/` and `out/` are included automatically. Rendered videos and `record_list.tsv` land in your host's `out/` and `media/` directories exactly as they would in a native install — no `docker cp` required.
+
+## What the image contains
+
+The Dockerfile installs:
+
+- `cmake`, `ninja-build`, `git`, `pkg-config`, `g++`
+- `ffmpeg` and all associated development libraries
+- `gnuplot`
+- `librsvg2-dev`, `libglib2.0-dev`, `libcairo2-dev`, `libpng-dev` (SVG and PNG rendering)
+- `libtinyxml2-dev`, `libgtkmm-3.0-dev`, `qt6-base-dev` (MicroTeX dependencies)
+- MicroTeX, compiled from source using the Qt backend and symlinked to `../MicroTeX-master` relative to the SwapTube root
+
+The CUDA environment is set up through the base image, with `CUDA_HOME`, `CUDAHOME`, `LD_LIBRARY_PATH`, and `PATH` configured for `/usr/local/cuda`.
+
+<Tip>
+To convert the raw `.mkv` output to a web-compatible `.mp4`, run `convert.sh` on the project name after the render completes:
+
+```bash
+./convert.sh MyProject
+```
+</Tip>
+
+## Running an interactive shell
+
+If you want to explore the environment or debug a build before running a render, drop the `./go.sh` command to get a bash shell:
+
+```bash
+docker run --rm -it --gpus all \
+  -u $(id -u):$(id -g) \
+  -v "$PWD:/workspace/swaptube" \
+  -v swaptube-build:/workspace/swaptube/build \
+  -w /workspace/swaptube \
+  swaptube:cuda
+```
+
+The image's default `CMD` is `/bin/bash`, so omitting the command at the end of `docker run` opens an interactive shell directly.
+
+<Warning>
+The Dockerfile's `COPY .. /workspace` step bakes a snapshot of the source tree into the image at build time. If you modify your project files after building the image, you do **not** need to rebuild — the `-v "$PWD:/workspace/swaptube"` bind mount overlays the live checkout on top of the baked snapshot at run time.
+</Warning>

@@ -1,0 +1,550 @@
+---
+title: "Math Scenes: Fractals, Graphs, Algebra, and More"
+sidebarTitle: "Math Scenes"
+description: "Reference for every SwapTube mathematical visualisation scene — from Mandelbrot and Rubik's Cube to force-directed graphs, manifolds, and permutations."
+---
+
+SwapTube ships a large library of purpose-built mathematical visualisation scenes, all living under `src/Scenes/Math/`. Each one extends either `Scene`, `CoordinateScene`, or `ThreeDimensionScene` (see [Common Scenes](/scenes/common-scenes) for those base classes) and is driven entirely by the `StateManager` — you animate every visual parameter by calling `manager.transition(...)` or `manager.set(...)` on the scene's `manager` member.
+
+---
+
+## Fractal Scenes
+
+### `MandelbrotScene`
+
+**Header:** `src/Scenes/Math/MandelbrotScene.h`  
+**Inherits:** `CoordinateScene → Scene`
+
+Renders the Mandelbrot set (or Julia sets) entirely on the GPU. The scene inherits the full `CoordinateScene` viewport (`center_x`, `center_y`, `zoom`) and adds fractal-specific parameters.
+
+| State variable | Meaning |
+|---|---|
+| `pixel_param_z` | Weight of the pixel coordinate in the `z` seed (0 = fixed `z`, 1 = pixel as `z`) |
+| `pixel_param_c` | Weight of the pixel coordinate in the `c` seed (0 = fixed `c`, 1 = pixel as `c`) |
+| `seed_c_r` | Real part of the fixed `c` seed when `pixel_param_c` is 0 |
+| `seed_c_i` | Imaginary part of the fixed `c` seed |
+
+```cpp
+#include "Scenes/Math/MandelbrotScene.h"
+
+void render_video() {
+    MandelbrotScene ms;
+    ms.manager.set("zoom", ".2");
+    ms.manager.transition(MICRO, {
+        {"pixel_param_z", "1"},
+        {"pixel_param_c", "0"},
+        {"seed_c_r", ".4"},
+        {"seed_c_i", ".1"},
+    });
+    stage_macroblock(SilenceBlock(4), 2);
+    ms.render_microblock();
+    ms.manager.transition(MICRO, "zoom", "1");
+    ms.render_microblock();
+}
+```
+
+---
+
+### `MandelbulbScene`
+
+**Header:** `src/Scenes/Math/MandelbulbScene.h`  
+**Inherits:** `Scene`
+
+Renders the 3-D Mandelbulb fractal using GPU ray-marching. All visual parameters are accessed through `manager`.
+
+---
+
+### `Fractal2DScene`
+
+**Header:** `src/Scenes/Math/Fractal2DScene.h`  
+**Inherits:** `Scene`
+
+A highly generalised 2-D fractal renderer that supports multiple iteration modes, selectable via the `fractalModes` enum:
+
+| Mode constant | Description |
+|---|---|
+| `MANDELBROT_2` | Standard degree-2 Mandelbrot |
+| `MANDELBROT_3` | Degree-3 Mandelbrot |
+| `MANDELBROT_POWER` | Mandelbrot with a state-variable exponent |
+| `MANDELBROT_XSET` | Xset / parameter-space variant |
+| `REAL_COEFF_POLY` | Polynomial with real coefficients |
+| `COMPLEX_COEFF_POLY` | Polynomial with complex coefficients |
+| `COMPLEX_C_COEFF_POLY` | Polynomial with complex `c`-parameterised coefficients |
+
+The scene exposes a helper for building parameter state sets:
+
+```cpp
+StateSet makeFractalStateSet(
+    vector<float> params,
+    const string& identifier,
+    const int mode          // one of the fractalModes enum values
+);
+```
+
+---
+
+### `RootFractalScene`
+
+**Header:** `src/Scenes/Math/RootFractalScene.h`  
+**Inherits:** `CoordinateScene → Scene`
+
+Renders a fractal whose basin boundaries are defined by the roots of a complex polynomial. Inherits the full `CoordinateScene` viewport (`center_x`, `center_y`, `zoom`, `ticks_opacity`).
+
+---
+
+### `VolumetricScene`
+
+**Header:** `src/Scenes/Math/VolumetricFractalScene.h`  
+**Inherits:** `Scene`
+
+A 3-D volumetric fractal renderer using GPU ray-casting.
+
+---
+
+## Graph Scenes
+
+### `GraphScene`
+
+**Header:** `src/Scenes/Math/GraphScene.h`  
+**Inherits:** `ThreeDimensionScene → SuperScene → Scene`
+
+`GraphScene` is one of the most powerful scenes in SwapTube. It maintains a force-directed `Graph` data structure whose nodes and edges are projected into 3-D space and then rendered via the inherited `ThreeDimensionScene` camera. Physics simulation (repulsion, attraction, velocity decay) runs automatically during `change_data()`.
+
+#### Physics State Variables
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `repel` | `1` | Node repulsion strength |
+| `attract` | `1` | Edge attraction strength |
+| `decay` | `.95` | Velocity decay per tick |
+| `physics_multiplier` | `1` | Global physics speed scale |
+| `dimensions` | `3` | Number of spatial dimensions for physics (1–4) |
+
+#### Visual State Variables
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `edge_weights_size` | `0` | Font size multiplier for edge-weight labels |
+| `node_labels_size` | `1` | Font size multiplier for node labels |
+| `midpoint_multiplier` | `1` | Size of the directed-edge midpoint dot |
+
+#### Camera Variables (inherited)
+
+`q1`, `qi`, `qj`, `qk`, `d`, `fov`, `x`, `y`, `z` — see [ThreeDimensionScene](/scenes/common-scenes#threedimensionscene).
+
+#### `Graph` API
+
+```cpp
+// Add a node with a numeric hash as its unique ID
+graph.add_node(double hash);
+
+// Add a directed edge between two node IDs
+graph.add_edge(double from, double to, double opacity = 1);
+
+// Remove an edge
+graph.remove_edge(double from, double to);
+
+// Remove a node
+graph.remove_node(double id);
+
+// Animate a node to a new vec4 position over a transition
+transition_node_position(TransitionType tt, double hash, const vec4& new_position);
+```
+
+#### `GraphDrawingConfig`
+
+Each node and edge has a `NodeRenderData` / `EdgeRenderData` profile (color, radius, label, opacity, splash effect, dashed style) managed by the `config` member of type `GraphDrawingConfig`.
+
+#### Label Customisation
+
+```cpp
+gs.label_color   = 0xFFFFFFFF;           // ARGB color of node labels
+gs.label_size    = vec2(0.4, 0.08);      // Width/height of each label box (fraction of scene)
+gs.label_offset  = vec2(0, 0);           // Pixel offset of labels from node center
+gs.edge_label_offset = 0.045;            // Perpendicular offset of edge labels
+```
+
+#### Demo — `GraphSpreadDemo`
+
+```cpp
+#include "Scenes/Common/CompositeScene.h"
+#include "Scenes/Math/GraphScene.h"
+
+void render_video() {
+    GraphScene gs;
+
+    gs.manager.set({
+        {"q1", "1"}, {"qi", "0"}, {"qj", "0"}, {"qk", "0"},
+        {"d", "900"},
+        {"physics_multiplier", "40"},
+    });
+
+    stage_macroblock(SilenceBlock(10), 2);
+
+    // Build a 50x50 grid graph
+    int graph_size = 50;
+    for (int i = 0; i < graph_size; i++) {
+        for (int j = 0; j < graph_size; j++) {
+            int hash = i + j * graph_size;
+            gs.graph.add_node(hash);
+            if (i > 0) gs.graph.add_edge(hash, hash - 1);
+            if (j > 0) gs.graph.add_edge(hash, hash - graph_size);
+        }
+    }
+    gs.render_microblock();
+    gs.render_microblock();
+}
+```
+
+---
+
+### `RubiksGraphScene`
+
+**Header:** `src/Scenes/Math/RubiksGraphScene.h`  
+**Inherits:** `CompositeScene → SuperScene → Scene`
+
+Combines a `GraphScene` with a collection of `RubiksScene` children to visualise the Cayley graph of the Rubik's Cube group. Each node in the graph can optionally display a miniature cube and/or a label.
+
+```cpp
+// Add a cube state via an algorithm string
+void add_cube(const string& alg, bool cube_or_not, bool label_or_not);
+
+// Add a cube state directly via a sticker pattern
+void add_cube(const CubeStickerPattern& pattern, bool cube_or_not, bool label_or_not);
+
+// Expand all leaf nodes by applying a move set
+void add_children(
+    unordered_set<string> move_set,
+    bool cube_or_not,
+    bool edge_label_or_not,
+    bool cube_label_or_not
+);
+
+shared_ptr<GraphScene> gs;  // Direct access to the underlying graph
+```
+
+---
+
+## 3-D Algebra Scenes
+
+### `FourDAlgebraScene`
+
+**Header:** `src/Scenes/Math/FourDAlgebraScene.h`  
+**Inherits:** `Scene`
+
+Visualises 4-D algebraic structure (such as quaternion multiplication) projected onto the 2-D screen. All visual parameters are managed through `manager`.
+
+---
+
+### `FourDPlaneScene`
+
+**Header:** `src/Scenes/Math/FourDPlaneScene.h`  
+**Inherits:** `CoordinateScene → Scene`
+
+Renders a 2-D slice of 4-D space on a coordinate plane. Provides helper functions for building and multiplying 4-D rotation matrices:
+
+```cpp
+float** rotationMatrix(int rows, int cols, int axis1, int axis2, float angle);
+float** matrixMult(float** A, float** B, int rows, int cols, int shared);
+```
+
+---
+
+### `FourDVerseScene`
+
+**Header:** `src/Scenes/Math/FourDVerseScene.h`  
+**Inherits:** `Scene`
+
+Renders a full 4-D perspective view into a 2-D frame. Driven entirely by `manager` state variables.
+
+---
+
+### `ThreeDAlgebraScene`
+
+**Header:** `src/Scenes/Math/ThreeDAlgebraScene.h`  
+**Inherits:** `ThreeDimensionScene → SuperScene → Scene`
+
+Visualises 3-D algebraic operations (e.g. cross products, geometric algebra) using the inherited 3-D camera and point/line geometry. Includes internal helpers for 4-D projection and lerp-based line interpolation.
+
+---
+
+### `TwoDAlgebraScene`
+
+**Header:** `src/Scenes/Math/TwoDAlgebraScene.h`  
+**Inherits:** `CoordinateScene → Scene`
+
+A 2-D counterpart for visualising algebraic operations on the complex plane, inheriting the full `CoordinateScene` viewport.
+
+---
+
+## Geometric / Topological Scenes
+
+### `ManifoldScene`
+
+**Header:** `src/Scenes/Math/ManifoldScene.h`  
+**Inherits:** `ThreeDimensionScene → SuperScene → Scene`
+
+Renders parametric surfaces using GPU ray-marching with a depth buffer. Manifolds are defined by RPN equations for their `x`, `y`, `z` coordinates and an optional color channel, evaluated over a `(u, v)` parameter grid. An optional texture can be mapped onto the surface.
+
+```cpp
+void add_manifold(
+    const string& name,
+    const string& x_eq,    // RPN equation for x(u,v)
+    const string& y_eq,    // RPN equation for y(u,v)
+    const string& z_eq,    // RPN equation for z(u,v)
+    const string& r_eq,    // RPN equation for red channel
+    const string& i_eq,    // RPN equation for green channel
+    const string& u_min, const string& u_max, const string& u_steps,
+    const string& v_min, const string& v_max, const string& v_steps
+);
+
+void remove_manifold(const string& name);
+
+void set_texture(const Pixels& new_texture);  // Map a PNG texture onto the surface
+```
+
+#### Demo — `ManifoldDemo`
+
+```cpp
+#include "Scenes/Math/ManifoldScene.h"
+#include "IO/PNG.h"
+
+void render_video() {
+    ManifoldScene ms;
+
+    // Start with a flat plane
+    ms.add_manifold("",
+        "(a)", "(b) -1 *", "0",
+        "(a)", "(b)",
+        "-1", "1", "5000",
+        "-1", "1", "5000"
+    );
+
+    stage_macroblock(SilenceBlock(15), 6);
+    ms.manager.set({{"d", "4"}});
+
+    Pixels pix;
+    png_to_pix(pix, "../earth_tiny");
+    ms.set_texture(pix);
+
+    // Animate the manifold equations to describe a sphere
+    ms.manager.transition(MICRO, {
+        {"manifold_x", "(a) cos (b) sin *"},
+        {"manifold_y", "(b) cos"},
+        {"manifold_z", "(a) sin (b) sin *"},
+        {"manifold_a_min", "0"},
+        {"manifold_a_max", "pi 2 *"},
+        {"manifold_b_min", "0"},
+        {"manifold_b_max", "pi"},
+    });
+    ms.render_microblock();
+    ms.render_microblock();
+
+    // Spin the camera
+    ms.manager.transition(MICRO, {
+        {"q1", "{t} 2 / sin"},
+        {"qi", "{t} 2 * sin .6 *"},
+        {"qj", "{t} 2 / cos"},
+        {"qk", "0"},
+    });
+    ms.render_microblock();
+    ms.render_microblock();
+    ms.render_microblock();
+    ms.render_microblock();
+}
+```
+
+---
+
+### `GeodesicScene`
+
+**Header:** `src/Scenes/Math/GeodesicScene.h`  
+**Inherits:** `Scene`
+
+Renders geodesics (shortest paths) on parametric manifolds. The manifold surface is defined by four RPN state equations (`x`, `y`, `z`, `w`) and rendered in two modes — perspective and manifold-space:
+
+```cpp
+void draw_perspective(
+    ResolvedStateEquation& x_eq, ResolvedStateEquation& y_eq,
+    ResolvedStateEquation& z_eq, ResolvedStateEquation& w_eq,
+    const quat& camera_direction
+);
+
+void draw_manifold(
+    ResolvedStateEquation& x_eq, ResolvedStateEquation& y_eq,
+    ResolvedStateEquation& z_eq, ResolvedStateEquation& w_eq,
+    const quat& fov_quat
+);
+```
+
+---
+
+### `GeometryScene`
+
+**Header:** `src/Scenes/Math/GeometryScene.h`  
+**Inherits:** `CoordinateScene → Scene`
+
+Renders a `GeometricConstruction` — a sequence of Euclidean construction steps — on top of a coordinate grid. The `construction` member is a `GeometricConstruction` object you populate before rendering.
+
+```cpp
+GeometricConstruction construction;  // public member — populate this
+```
+
+---
+
+## Cellular Automaton
+
+### `ConwayScene`
+
+**Header:** `src/Scenes/Math/ConwayScene.h`  
+**Inherits:** `CoordinateScene → Scene`
+
+Renders Conway's Game of Life (or any Life-like automaton) on a GPU-accelerated bitboard grid. The grid advances one generation per `on_end_transition_extra_behavior` call.
+
+```cpp
+ConwayScene(
+    const ivec2& size_bitboards,   // Grid size in bitboard units
+    const Pixels& env,             // Initial cell state as a pixel image
+    const vec2& dimensions = vec2(1, 1)
+);
+```
+
+---
+
+## Rubik's Cube
+
+### `RubiksScene`
+
+**Header:** `src/Scenes/Math/RubiksScene.h`  
+**Inherits:** `ThreeDimensionScene → SuperScene → Scene`
+
+Renders an animated 3-D Rubik's Cube using the inherited 3-D camera. Moves are applied via Singmaster notation tokens, which are animated smoothly across a microblock.
+
+```cpp
+RubiksScene(const vec2& dimensions = vec2(1, 1));
+RubiksScene(const CubeStickerPattern& pattern, const vec2& dimensions = vec2(1, 1));
+
+// Apply a single move token (e.g. "R", "B'", "U2")
+void exec_move_from_slice(const string& token);
+
+Rubiks the_cube;  // Direct access to the underlying cube state
+```
+
+Camera control is inherited from `ThreeDimensionScene` (`q1/qi/qj/qk`, `d`, `fov`). The state variable `internal_plastic_opacity` controls whether the cube's internal plastic is visible (useful for exploded-view effects).
+
+#### Demo — `RubiksDemo` (excerpt)
+
+```cpp
+#include "Scenes/Math/RubiksScene.h"
+
+void render_video() {
+    RubiksScene rs;
+
+    quat yaw   = quat(cos(0.125 * M_PI), 0, sin(0.125 * M_PI), 0);
+    quat pitch = quat(cos(-0.098 * M_PI), sin(-0.098 * M_PI), 0, 0);
+    quat combined = pitch * yaw;
+
+    stage_macroblock(SilenceBlock(1), 1);
+    rs.manager.transition(MACRO, {
+        {"q1",  to_string(combined.u)},
+        {"qi",  to_string(combined.i)},
+        {"qj",  to_string(combined.j)},
+        {"qk",  to_string(combined.k)},
+        {"d",   "1.4"},
+        {"fov", "0.25"},
+    });
+    rs.render_microblock();
+
+    stage_macroblock(SilenceBlock(10), 10);
+    rs.exec_move_from_slice("R");   rs.render_microblock();
+    rs.exec_move_from_slice("B'");  rs.render_microblock();
+    rs.exec_move_from_slice("B2");  rs.render_microblock();
+    rs.exec_move_from_slice("U");   rs.render_microblock();
+    rs.exec_move_from_slice("R'");  rs.render_microblock();
+    // ...
+}
+```
+
+---
+
+## Billiards Scenes
+
+### `OuterBilliardsScene`
+
+**Header:** `src/Scenes/Math/OuterBilliardsScene.h`  
+**Inherits:** `CoordinateScene → Scene`
+
+Visualises outer billiards dynamics around a convex polygon. Key methods:
+
+```cpp
+// Build the full orbit path for `count` reflections from a seed point
+vector<vec2> build_orbit_path(double count);
+
+// Add a dummy starting point (used before transitions)
+void add_dummy_point();
+```
+
+---
+
+### `InnerBilliardsScene`
+
+**Header:** `src/Scenes/Math/InnerBilliardsScene.h`  
+**Inherits:** `CoordinateScene → Scene`
+
+Renders inner (standard) billiard-table ball trajectories, including a cue stick, ball, and trail, inside a polygon table.
+
+---
+
+## Permutation / Symmetry
+
+### `PermutationScene`
+
+**Header:** `src/Scenes/Math/PermutationScene.h`  
+**Inherits:** `CoordinateScene → Scene`
+
+Visualises permutations and their orbits on a 2-D coordinate grid. The permutation data is loaded from a file; individual orbits are animated with `move()`.
+
+```cpp
+PermutationScene(const string file_name = "", const vec2& dimensions = vec2(1, 1));
+
+// Trigger the orbit animation for a named orbit
+void move(const string orbit_name);
+
+// Get the screen position of a named place from state
+vec2 get_place_position_from_state(const string& place_name);
+
+Permutation the_perm;  // Direct access to the permutation data object
+```
+
+---
+
+### `MultiplicationTableScene`
+
+**Header:** `src/Scenes/Math/MultiplicationTableScene.h`  
+**Inherits:** `Scene`
+
+Renders a color-coded group multiplication table. All parameters controlled through `manager`.
+
+---
+
+## Function Scenes
+
+### `RealFunctionScene`
+
+**Header:** `src/Scenes/Math/RealFunctionScene.h`  
+**Inherits:** `CoordinateScene → Scene`
+
+Plots real-valued functions `f(x)` on a coordinate grid. The function formula is supplied as an RPN state equation referencing `{a}` as the x-variable, enabling smooth animated transitions between different function shapes. Two function colors are predefined (`0xFF0088FF` and `0xFFFF0088`).
+
+```cpp
+// Evaluate the function at x, interpolating between current and transitional formulas
+float call_the_function(const float x, const ResolvedStateEquation& re);
+
+void render_functions();  // Called internally by draw()
+```
+
+---
+
+<Tip>
+  All math scenes that extend `CoordinateScene` inherit the `zoom`, `center_x`, `center_y`, and `ticks_opacity` state variables. All scenes that extend `ThreeDimensionScene` inherit the `q1/qi/qj/qk`, `d`, and `fov` camera variables.
+</Tip>

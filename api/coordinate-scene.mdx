@@ -1,0 +1,212 @@
+---
+title: "CoordinateScene — 2D Math Coordinate Plane API Reference"
+sidebarTitle: "CoordinateScene"
+description: "API reference for CoordinateScene: state-driven pan and zoom, math-to-pixel coordinate mapping, axis rendering, and the complex-plane display mode."
+---
+
+`CoordinateScene` is the shared foundation for every 2D mathematical visualization in SwapTube. It manages a pannable, zoomable coordinate window and exposes exact forward and inverse mappings between mathematical coordinates and screen pixels. Scenes such as `MandelbrotScene`, `RealFunctionScene`, and `Fractal2DScene` all extend `CoordinateScene`, inheriting its state variables and coordinate utilities. You typically do not instantiate `CoordinateScene` directly—instead you subclass it or use one of the ready-made math scenes—but understanding its state variables and mapping functions is essential for controlling any of them.
+
+The coordinate window is fully driven by `StateManager` expressions. Panning and zooming are just transitions on `center_x`, `center_y`, and `zoom`, which means they interpolate smoothly like any other animated property.
+
+<Note>
+  `CoordinateScene` extends `Scene` directly (not `SuperScene`). It is a single-layer scene with no child-management methods. For multi-scene layouts involving a coordinate scene, wrap it inside a `CompositeScene`.
+</Note>
+
+---
+
+## Constructor
+
+```cpp
+CoordinateScene(const vec2& dimensions = vec2(1, 1));
+```
+
+<ParamField path="dimensions" type="vec2" default="vec2(1, 1)">
+  Fractional canvas size relative to the global video resolution, passed through to `Scene`. Affects both the pixel buffer size and the aspect-ratio correction applied to `window_width` (see the derived state variables below).
+</ParamField>
+
+On construction the following state variables are registered in the `StateManager`:
+
+<Expandable title="Built-in CoordinateScene state variables">
+
+| Variable | Default expression | Description |
+|---|---|---|
+| `center_x` | `"0"` | X coordinate of the viewport center in math space. |
+| `center_y` | `"0"` | Y coordinate of the viewport center in math space. |
+| `zoom` | `"0"` | Zoom level. Window height is `exp(zoom) * 0.2`, so positive values zoom in. |
+| `window_height` | `"<zoom> exp .2 *"` | Height of the visible math window, derived from `zoom`. |
+| `window_width` | `"<window_height> <w> {VIDEO_WIDTH} * / <h> {VIDEO_HEIGHT} * *"` | Width of the visible math window, corrected for aspect ratio and scene dimensions. |
+| `left_x` | `"<center_x> .5 <window_width> / -"` | Left edge of the visible window in math space. |
+| `right_x` | `"<center_x> .5 <window_width> / +"` | Right edge of the visible window in math space. |
+| `top_y` | `"<center_y> .5 <window_height> / -"` | Top edge of the visible window (smallest y in math space). |
+| `bottom_y` | `"<center_y> .5 <window_height> / +"` | Bottom edge of the visible window (largest y in math space). |
+| `ticks_opacity` | `"0"` | Opacity of the coordinate grid and tick labels. `0` disables rendering entirely. |
+| `microblock_fraction_passthrough` | `"{microblock_fraction}"` | Exposes the global microblock fraction as a local variable, useful for time-based shader uniforms in subclasses. |
+
+</Expandable>
+
+---
+
+## Public Data Members
+
+### `complex_plane`
+
+```cpp
+bool complex_plane = false;
+```
+
+When `true`, the Y axis is treated as the imaginary axis: tick labels on the Y axis are rendered as `2i`, `-0.5i`, etc. instead of plain numbers. Has no effect on coordinate mapping—it only changes how `draw_one_axis()` formats tick text.
+
+---
+
+## Coordinate Mapping
+
+### `point_to_pixel()`
+
+```cpp
+vec2 point_to_pixel(const vec2& p);
+```
+
+Converts a point in mathematical coordinate space to a position in the scene's pixel buffer. The mapping is linear, respecting the current `left_x`, `right_x`, `top_y`, `bottom_y` window bounds.
+
+<ParamField path="p" type="vec2" required>
+  A point in math space. `p.x` maps along the horizontal axis; `p.y` maps along the vertical axis. Y increases downward on screen (positive Y in math space maps toward the bottom of the scene).
+</ParamField>
+
+<ResponseField name="return" type="vec2">
+  Pixel coordinates within the scene's buffer, with `(0, 0)` at the top-left corner. Sub-pixel precision is preserved as a `float` vector.
+</ResponseField>
+
+```cpp
+// Convert the origin to a pixel position
+vec2 origin_px = scene.point_to_pixel(vec2(0.0f, 0.0f));
+
+// Convert a specific math point
+vec2 px = scene.point_to_pixel(vec2(1.5f, -0.5f));
+```
+
+### `pixel_to_point()`
+
+```cpp
+vec2 pixel_to_point(const vec2& pix);
+```
+
+Inverse of `point_to_pixel()`. Converts a pixel coordinate in the scene's buffer back to the corresponding mathematical coordinate. Useful for hit-testing (e.g., converting a mouse position to a math coordinate for interactive exploration).
+
+<ParamField path="pix" type="vec2" required>
+  A pixel coordinate within the scene, with `(0, 0)` at the top-left corner.
+</ParamField>
+
+<ResponseField name="return" type="vec2">
+  The corresponding point in mathematical coordinate space.
+</ResponseField>
+
+---
+
+## Drawing
+
+### `draw()`
+
+```cpp
+void draw() override;
+```
+
+Base implementation dispatches to the CUDA kernel `draw_coordinate_grid`, which renders a coordinate grid for the current viewport. Grid rendering is skipped entirely when `ticks_opacity < 0.01`. Subclasses that override `draw()` should call `CoordinateScene::draw()` (or invoke the grid kernel directly) if they want the grid to appear.
+
+### `draw_one_axis()`
+
+```cpp
+void draw_one_axis(bool ymode);
+```
+
+Renders a single axis with evenly spaced tick marks and numeric labels. The label density automatically adapts to the current zoom level, switching between multiples of powers of ten and multiples of five.
+
+<ParamField path="ymode" type="bool" required>
+  `false` draws the X axis (horizontal); `true` draws the Y axis (vertical). When `complex_plane` is `true` and `ymode` is `true`, tick labels are formatted as imaginary numbers.
+</ParamField>
+
+<Tip>
+  `draw_one_axis()` reads `ticks_opacity` from state. Set `ticks_opacity` to a value greater than `0.01` before calling it, or the method will return immediately with no output.
+</Tip>
+
+---
+
+## Controlling the View from Project Code
+
+Because all viewport properties live in the `StateManager`, you control them with `manager.set()` and `manager.transition()`. Here are common patterns:
+
+<CodeGroup>
+
+```cpp Pan to a point
+// Jump the center immediately to (2, -1)
+scene.manager.set("center_x", "2");
+scene.manager.set("center_y", "-1");
+```
+
+```cpp Animate a zoom-in
+// Transition zoom from 0 to 3 over a microblock
+scene.manager.transition(MICRO, "zoom", "3");
+```
+
+```cpp Follow a moving target
+// Center tracks a named point; useful for fractal fly-throughs
+scene.manager.transition(MICRO, "center_x", "0.3602");
+scene.manager.transition(MICRO, "center_y", "-0.6413");
+scene.manager.transition(MICRO, "zoom",     "12");
+```
+
+```cpp Enable the coordinate grid
+scene.manager.set("ticks_opacity", "1");
+```
+
+</CodeGroup>
+
+---
+
+## Known Subclasses
+
+`CoordinateScene` is the base for all 2D mathematical rendering scenes in SwapTube. The following built-in scenes extend it:
+
+| Scene class | Description |
+|---|---|
+| `MandelbrotScene` | GPU-accelerated Mandelbrot set renderer |
+| `RealFunctionScene` | Plots a real-valued function `f(x)` on the coordinate plane |
+| `Fractal2DScene` | General 2D iterated-function-system fractal renderer |
+| `LatexScene` | Renders LaTeX equations overlaid on a coordinate background |
+
+All of these inherit the `center_x`, `center_y`, `zoom`, `window_width`, `window_height`, and `ticks_opacity` variables and can be panned/zoomed with the same `manager.transition()` calls.
+
+---
+
+## Example — Animated Pan and Zoom
+
+```cpp
+#include "Scenes/Math/MandelbrotScene.h"
+#include "Scenes/Common/CompositeScene.h"
+
+void render_video() {
+    CompositeScene cs;
+
+    auto ms = make_shared<MandelbrotScene>();
+
+    // Enable the coordinate grid and show imaginary axis labels
+    ms->complex_plane = true;
+    ms->manager.set("ticks_opacity", "1");
+
+    cs.add_scene(ms, "ms");
+
+    stage_macroblock(SilenceBlock(6), 3);
+
+    // Microblock 1: static view at default zoom
+    cs.render_microblock();
+
+    // Microblock 2: zoom into the Mandelbrot needle
+    ms->manager.transition(MICRO, "center_x", "-1.7682");
+    ms->manager.transition(MICRO, "center_y", "0");
+    ms->manager.transition(MICRO, "zoom",     "8");
+    cs.render_microblock();
+
+    // Microblock 3: pan along the real axis
+    ms->manager.transition(MICRO, "center_x", "-1.401");
+    cs.render_microblock();
+}
+```

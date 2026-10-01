@@ -1,0 +1,237 @@
+---
+title: "Microblock Rendering: render_microblock() Reference"
+sidebarTitle: "Microblocks"
+description: "How microblocks subdivide a macroblock into visual units, the render_microblock() call contract, set_for_real(), and live global state variables."
+---
+
+Once a Macroblock has been staged with `stage_macroblock()`, the visual work begins. A **microblock** is the smallest discrete unit of rendering time within a macroblock — each call to `Scene::render_microblock()` produces all of the video frames that correspond to one evenly-spaced slice of the macroblock's audio duration. SwapTube divides the total frame count of the macroblock across the declared microblock count, rounding to whole frames so that every microblock renders exactly the right number of frames and the final count always equals the macroblock's total. The relationship between macroblocks and microblocks is therefore always `1 : N`, where `N` is the number of `render_microblock()` calls (or the count passed as the second argument to `stage_macroblock()`).
+
+---
+
+## Macroblock ↔ Microblock Relationship
+
+SwapTube uses a **two-layer time model**. A Macroblock defines *what audio plays* and *for how long*. Microblocks define *how that time is subdivided* for visual animation purposes.
+
+```text
+stage_macroblock(SilenceBlock(6.0), 3);   // 6 s of audio → 3 visual slices
+//  ┌──── Macroblock (6 s total) ──────────────────────────┐
+//  │ Microblock 0  │ Microblock 1  │ Microblock 2          │
+//  │ (2 s / 60 fr) │ (2 s / 60 fr) │ (2 s / 60 fr)        │
+//  └───────────────┴───────────────┴──────────────────────┘
+scene.render_microblock();   // consumes microblock 0
+scene.render_microblock();   // consumes microblock 1
+scene.render_microblock();   // consumes microblock 2
+```
+
+Each `render_microblock()` call decrements the internal `remaining_microblocks_in_macroblock` counter. When the counter reaches zero, the macro-level end-transition hook fires automatically — you do not need to close the macroblock manually.
+
+<Note>
+  During a **smoketest**, `render_microblock()` draws exactly one test frame per
+  call and records the call count. During the **full render** it draws every video
+  frame that falls within that microblock's time slice (potentially many frames
+  for longer audio). Project logic must therefore not branch on output that only
+  exists during a full render, so that the smoketest and render produce the same
+  call sequence.
+</Note>
+
+---
+
+## `Scene::render_microblock()`
+
+`render_microblock()` is a member of the `Scene` base class. Every concrete scene inherits it; you never override it. Call it on whichever scene should produce frames for this slice of time.
+
+```cpp cpp
+void Scene::render_microblock();
+```
+
+Internally, the method:
+
+1. Computes how many video frames belong to this microblock based on proportional distribution of the macroblock's total frame count.
+2. For each frame, updates `microblock_fraction` and `macroblock_fraction` in global state, calls `query()` (which triggers `draw()`), and feeds the GPU pixel buffer to the video encoder.
+3. Decrements `remaining_microblocks_in_macroblock`.
+4. Fires `on_end_transition(MICRO)` to close any open `MICRO`-scoped state transitions.
+5. When this was the last microblock in the macroblock, also fires `on_end_transition(MACRO)` and increments `macroblock_number`.
+
+<Warning>
+  Calling `render_microblock()` when no macroblock is currently staged (i.e.,
+  `remaining_microblocks_in_macroblock == 0`) throws a `runtime_error` with a
+  message indicating that `stage_macroblock()` was probably omitted. Conversely,
+  calling `stage_macroblock()` while microblocks are still outstanding also throws.
+  The two calls must alternate correctly: stage first, render second, exhaust all
+  microblocks, then stage the next block.
+</Warning>
+
+### Call ordering
+
+<Steps>
+  <Step title="Stage the macroblock">
+    Call `stage_macroblock(block)` or `stage_macroblock(block, n)` to commit the
+    audio and initialise the microblock counter.
+  </Step>
+  <Step title="Optionally configure transitions">
+    Set state transitions on the scene's `manager` that should take effect over
+    this microblock's time slice.
+  </Step>
+  <Step title="Call render_microblock()">
+    Call `yourScene.render_microblock()` once per microblock. Repeat for each
+    subdivided time slice.
+  </Step>
+  <Step title="Repeat for the next macroblock">
+    When all microblocks are consumed, stage the next macroblock and repeat.
+  </Step>
+</Steps>
+
+---
+
+## Global State Variables During Rendering
+
+SwapTube maintains a set of read-only global state variables that are updated **per frame** inside `render_one_frame()`. Any scene's state equation — any expression passed to `manager.set()` or `manager.transition()` — can reference these variables using curly-brace syntax.
+
+| Variable | Type | Updated | Description |
+|---|---|---|---|
+| `{microblock_fraction}` | `double` | Per frame | Progress through the **current microblock**, in `[0, 1)`. Equals `frame_within_microblock / total_frames_in_microblock`. |
+| `{macroblock_fraction}` | `double` | Per frame | Progress through the **current macroblock**, in `[0, 1]`. Equals `1 − remaining_frames / total_frames`. |
+| `{t}` | `double` | Per frame | Elapsed video time in **seconds** since the start of the render. Equals `frame_number / framerate`. |
+| `{frame_number}` | `double` | Per frame | Absolute zero-based video frame index. |
+| `{microblock_number}` | `double` | Per microblock | Zero-based count of microblocks rendered so far across the entire video. |
+| `{macroblock_number}` | `double` | Per macroblock | Zero-based count of macroblocks completed so far. |
+| `{voice}` | `double` | Per frame | Peak left-channel audio sample for the current frame, normalised to `[0, 1]`. Useful for driving visualisations that react to narration volume. |
+
+<Note>
+  `{microblock_fraction}` is the variable most commonly used for driving smooth
+  per-microblock animations. Bezier state curves use it internally as their
+  independent variable, so `manager.transition()` calls automatically animate
+  over the microblock's duration without any extra configuration.
+</Note>
+
+### Example: referencing global state in expressions
+
+```cpp cpp
+// Animate opacity from 0 to 1 over the microblock using microblock_fraction.
+scene.manager.transition(MICRO, "opacity", "{microblock_fraction}");
+
+// Drive a zoom level with elapsed video time.
+scene.manager.set("zoom", "{t} 0.1 * 1 +");
+
+// React to the narrator's voice level.
+scene.manager.set("glow_radius", "{voice} 20 *");
+```
+
+---
+
+## `set_for_real(bool)`
+
+`set_for_real()` is a development shortcut that lets you skip drawing and video encoding for early sections of a project without skipping the project logic that sets up scene state. Call `set_for_real(false)` before sections you want to skip, and `set_for_real(true)` before the section you actually want to inspect. All `stage_macroblock()` and `render_microblock()` calls still execute in both modes, keeping the smoketest count consistent.
+
+```cpp cpp
+void set_for_real(bool for_real);
+```
+
+<ParamField path="for_real" type="bool" required>
+  Pass `false` to suppress drawing and encoding — `Scene::query()` skips the
+  CUDA draw call and the video encoder receives no frames. Pass `true` (the
+  default at program start) to restore normal rendering. Has no effect on audio
+  encoding or state transitions.
+</ParamField>
+
+<CodeGroup>
+```cpp Skip the introduction
+void render_video() {
+    set_for_real(false);
+
+    // These macroblocks execute but produce no encoded video output.
+    stage_macroblock(FileBlock("Welcome to this video."));
+    titleScene.render_microblock();
+
+    stage_macroblock(SilenceBlock(2.0));
+    titleScene.render_microblock();
+
+    set_for_real(true);
+
+    // From here on, frames are drawn and encoded normally.
+    stage_macroblock(FileBlock("Now let us look at the Mandelbrot set."));
+    mandelbrotScene.render_microblock();
+}
+```
+
+```cpp Smoketest-safe skip
+// set_for_real() is safe to use during smoketesting.
+// The smoketest still counts render_microblock() calls correctly.
+set_for_real(false);
+stage_macroblock(SilenceBlock(30.0), 10);
+for (int i = 0; i < 10; i++) longScene.render_microblock();
+
+set_for_real(true);
+stage_macroblock(FileBlock("Here is the key result."));
+resultScene.render_microblock();
+```
+</CodeGroup>
+
+<Warning>
+  `set_for_real(false)` is a **development tool**, not a production feature.
+  Sections rendered with `for_real = false` produce no video frames, so the
+  output file will have a gap in the timeline. Never ship a video encoded while
+  a section was skipped.
+</Warning>
+
+---
+
+## `finalize_macroblock_sequence()`
+
+Call `finalize_macroblock_sequence()` at the end of `render_video()` to flush the timeline. During a full render it verifies that all microblocks in the final macroblock were consumed. During a smoketest it closes the last open macroblock plan entry and writes the count file that the subsequent full render will read.
+
+```cpp cpp
+void finalize_macroblock_sequence();
+```
+
+<Note>
+  `Main.cpp` calls `finalize_timeline_plan()` after `render_video()` returns.
+  You only need to call `finalize_macroblock_sequence()` directly if you are
+  writing a custom entry point that does not use the standard `main()` provided
+  by `Main.cpp`.
+</Note>
+
+---
+
+## Example: `StateSliderScene` / TimelineDemo
+
+The `TimelineDemo` project (`src/Projects/Demos/TimelineDemo.cpp`) is the canonical demonstration of microblock mechanics. It uses a `StateSliderScene` — a scene that renders a labelled slider tracking a state variable — to visualise `{microblock_fraction}` updating in real time as each microblock renders.
+
+```cpp cpp
+// TimelineDemo.cpp
+#include "../Scenes/Media/StateSliderScene.h"
+
+void render_video() {
+    // Display the microblock_fraction global variable as a labelled slider.
+    StateSliderScene sss("{microblock_fraction}", "\\text{micro fraction}", 0, 1);
+
+    // First macroblock: 5 s + 1 s composite, explicitly declared as 5 microblocks.
+    stage_macroblock(CompositeBlock(SilenceBlock(5), SilenceBlock(1)), 5);
+    for (int i = 0; i < 5; i++) sss.render_microblock();
+
+    // Second macroblock: 1 s of silence, 2 microblocks.
+    stage_macroblock(SilenceBlock(1), 2);
+    for (int i = 0; i < 2; i++) sss.render_microblock();
+}
+```
+
+`StateSliderScene` takes four constructor arguments: the name of the global state variable to track, a display label (LaTeX is accepted), and the minimum and maximum values of the slider range.
+
+```cpp cpp
+StateSliderScene(const string& variable_name,
+                 const string& display_name,
+                 double min_val,
+                 double max_val,
+                 const vec2& dimensions = vec2(1, 1));
+```
+
+<Tip>
+  `StateSliderScene` is an excellent debugging aid. Drop it into any project to
+  verify that `{microblock_fraction}` resets to `0` at the start of each
+  microblock and rises smoothly to `1` by the end — confirming that your
+  macroblock/microblock boundaries are where you expect them.
+</Tip>
+
+### What the demo illustrates
+
+During the first macroblock the slider completes five full `0 → 1` sweeps — one per microblock — while the total audio lasts six seconds (5 s + 1 s). Because the microblock count was **declared** as `5` via the two-argument overload rather than inferred from the smoketest, SwapTube uses `5` even if the smoketest had observed a different number. The second macroblock performs two sweeps over its one-second duration, demonstrating that shorter macroblocks can still carry multiple microblocks for fine-grained animation control.

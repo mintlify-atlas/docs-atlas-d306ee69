@@ -1,0 +1,358 @@
+---
+title: "ThreeDimensionScene — 3D Rendering Scene API Reference"
+sidebarTitle: "3D Scene"
+description: "API reference for ThreeDimensionScene: quaternion camera, perspective projection, Point and Line geometry, CUDA render dispatch, and point label overlays."
+---
+
+`ThreeDimensionScene` is the GPU-accelerated 3D rendering layer in SwapTube. It maintains collections of `Point` and `Line` geometry, projects them through a perspective camera defined by a quaternion orientation and a focus point, and dispatches two CUDA kernels—one for lines, one for points—to rasterize them into its pixel buffer. The camera transform is driven entirely by `StateManager` variables, so smooth cinematic camera moves require nothing more than `manager.transition()` calls on the rotation quaternion components and the focus coordinates.
+
+`ThreeDimensionScene` extends `SuperScene`, so it can host child scenes (rendered as 2D overlays) in addition to its own 3D geometry. It is used directly in projects such as `ThreeDAlgebraDemo` and also serves as the parent class for `ThreeDAlgebraScene`.
+
+<Note>
+  All geometry (points and lines) is stored on the CPU in `std::vector` members and is uploaded to the GPU on every call to `draw()`. For very large geometry sets, prefer state-driven point arrays (see the `point<i>.x/y/z/a` pattern below) which also participate in `StateManager` interpolation.
+</Note>
+
+---
+
+## Constructor
+
+```cpp
+ThreeDimensionScene(const vec2& dimensions = vec2(1, 1));
+```
+
+<ParamField path="dimensions" type="vec2" default="vec2(1, 1)">
+  Fractional canvas size relative to the global video resolution, passed through to `SuperScene`. Affects the pixel buffer size and the `over_w_fov` scaling factor used in projection.
+</ParamField>
+
+On construction the following state variables are registered:
+
+<Expandable title="Built-in ThreeDimensionScene state variables">
+
+| Variable | Default | Description |
+|---|---|---|
+| `fov` | `"1"` | Field of view scaling factor. Larger values give a wider angle. |
+| `x` | `"0"` | X component of the camera focus point in world space. |
+| `y` | `"0"` | Y component of the camera focus point in world space. |
+| `z` | `"0"` | Z component of the camera focus point in world space. |
+| `d` | `"1"` | Distance from the focus point to the camera position along the view axis. |
+| `q1` | `"1"` | Real (scalar) component of the camera orientation quaternion. |
+| `qi` | `"0"` | i component of the camera orientation quaternion. |
+| `qj` | `"0"` | j component of the camera orientation quaternion. |
+| `qk` | `"0"` | k component of the camera orientation quaternion. |
+| `lines_opacity` | `"1"` | Global opacity multiplier for all lines. |
+| `points_opacity` | `"1"` | Global opacity multiplier for all points. |
+| `points_radius_multiplier` | `"1"` | Scales all point radii uniformly. |
+| `lines_thickness_multiplier` | `"1"` | Scales all line thicknesses uniformly. |
+| `point_labels_size` | `"0"` | Size multiplier for point label text. `0` disables labels. |
+
+</Expandable>
+
+---
+
+## Camera
+
+### `set_camera_direction()`
+
+```cpp
+void set_camera_direction();
+```
+
+Reads the current state values of `fov`, `q1`/`qi`/`qj`/`qk`, `x`/`y`/`z`, and `d`, then computes and stores the derived camera members: `camera_direction` (normalized quaternion), `camera_pos` (world-space position), `fov` (double), and `over_w_fov` (reciprocal of `geom_mean_size * fov`). Called automatically at the top of `draw()`.
+
+Call this manually if you need up-to-date camera members *before* `draw()` is called (for example, in a subclass that overrides `draw()` and calls `coordinate_to_pixel()` first).
+
+### Camera Public Members
+
+<ResponseField name="camera_pos" type="vec3">
+  World-space position of the camera eye, computed as `focus - rotate(vec3(0,0,d), conjugate(camera_direction))`. Updated by `set_camera_direction()`.
+</ResponseField>
+
+<ResponseField name="camera_direction" type="quat">
+  Normalized unit quaternion encoding the camera's orientation. Derived from `normalize(quat(q1, qi, qj, qk))`. Updated by `set_camera_direction()`.
+</ResponseField>
+
+<ResponseField name="fov" type="double">
+  Field-of-view scalar, mirrored from `state["fov"]` by `set_camera_direction()`.
+</ResponseField>
+
+<ResponseField name="over_w_fov" type="double">
+  Precomputed `1 / (geom_mean_size * fov)`. Used by the projection math to avoid a division per projected point.
+</ResponseField>
+
+---
+
+## Projection
+
+### `coordinate_to_pixel()`
+
+```cpp
+vec2 coordinate_to_pixel(vec3 coordinate, float& distance);
+```
+
+Projects a 3D world-space coordinate through the current camera and returns the 2D screen-space pixel position. Also outputs the signed depth along the view axis.
+
+<ParamField path="coordinate" type="vec3" required>
+  World-space position to project. Units are arbitrary and consistent with the positions used in `add_point()` / `add_line()`.
+</ParamField>
+
+<ParamField path="distance" type="float&" required>
+  Output parameter. Receives the depth of the point along the camera's view axis in world units. Positive values mean the point is in front of the camera. Points with `distance <= 0` are behind the camera and should not be rendered.
+</ParamField>
+
+<ResponseField name="return" type="vec2">
+  Pixel position in the scene's buffer, with `(0,0)` at the top-left. The x and y components of the underlying `vec3` returned by the camera projection kernel are extracted; the z component is written to `distance`.
+</ResponseField>
+
+```cpp
+float dist;
+vec2 screen_pos = scene.coordinate_to_pixel(vec3(1.0f, 0.5f, -2.0f), dist);
+if (dist > 0) {
+    // Point is in front of the camera — safe to use screen_pos
+}
+```
+
+---
+
+## Geometry Management
+
+### `add_point()`
+
+```cpp
+void add_point(const Point& p);
+```
+
+Appends a `Point` to the internal points vector. All points added this way are rendered as filled discs by the `render_points_on_gpu` CUDA kernel.
+
+<ParamField path="p" type="const Point&" required>
+  The point to add. See the `Point` struct documentation below.
+</ParamField>
+
+### `add_line()`
+
+```cpp
+void add_line(const Line& l);
+```
+
+Appends a `Line` to the internal lines vector. Lines are rendered as anti-aliased segments (optionally dashed) by the `render_lines_on_gpu` CUDA kernel.
+
+<ParamField path="l" type="const Line&" required>
+  The line segment to add. See the `Line` struct documentation below.
+</ParamField>
+
+### `clear_points()`
+
+```cpp
+void clear_points();
+```
+
+Removes all points from the internal vector. Geometry added via the `point<i>.x/y/z/a` state variables is unaffected—only points added via `add_point()` are cleared.
+
+### `clear_lines()`
+
+```cpp
+void clear_lines();
+```
+
+Removes all lines from the internal vector.
+
+---
+
+## Point Labels
+
+### `point_names`
+
+```cpp
+unordered_map<int, string> point_names;
+```
+
+Maps integer point indices to LaTeX label strings. When `point_labels_size > 0.001` in state, the `draw()` method renders each entry in this map as a LaTeX text label overlaid at the projected screen position of the corresponding state-driven point.
+
+The integer key must match the index `i` of a state-driven point (`point<i>.x`, `point<i>.y`, `point<i>.z`). The string value is a LaTeX expression (e.g., `"\\mathbf{e}_1"` or `"xy"`).
+
+```cpp
+scene.point_names = {
+    {0, "xx"},
+    {1, "xy"},
+    {2, "xz"},
+    {3, "yy"},
+};
+scene.manager.set("point_labels_size", "2");
+```
+
+---
+
+## State-Driven Point Arrays
+
+In addition to the `add_point()` / `clear_points()` workflow, `ThreeDimensionScene` supports an alternate system where point positions are stored directly as state variables. This enables smooth animation of individual point positions through the `StateManager`.
+
+For each integer index `i`, you can set:
+
+| Variable | Description |
+|---|---|
+| `point<i>.x` | X coordinate in world space |
+| `point<i>.y` | Y coordinate in world space |
+| `point<i>.z` | Z coordinate in world space |
+| `point<i>.a` | Per-point opacity in `[0, 1]` |
+
+The scene automatically discovers how many such points are defined by scanning sequentially from `i = 0` until a gap is found. These points are rendered with the color defined by `point_r`, `point_g`, `point_b` state variables and the shared `point_size` variable.
+
+```cpp
+scene.manager.set({
+    {"point_r", "255"}, {"point_g", "64"}, {"point_b", "64"},
+    {"point_size", "1.6"},
+    {"point0.x", "1"}, {"point0.y", "0"}, {"point0.z", "0"}, {"point0.a", "1"},
+    {"point1.x", "0"}, {"point1.y", "1"}, {"point1.z", "0"}, {"point1.a", "1"},
+});
+
+// Animate point 0 to a new position
+scene.manager.transition(MICRO, "point0.x", "0.5");
+scene.manager.transition(MICRO, "point0.y", "0.5");
+```
+
+---
+
+## Geometry Structs
+
+### `Point`
+
+Defined in `src/Host_Device_Shared/ThreeDimensionStructs.h`. Usable on both CPU and GPU (CUDA device code).
+
+```cpp
+struct Point {
+    vec3  center;   // World-space position
+    int   color;    // Packed ARGB color (e.g. 0xffff0000 for opaque red)
+    float opacity;  // [0, 1]
+    float size;     // Radius multiplier (relative to scene geom_mean_size)
+
+    Point(const vec3& pos, int clr, float op = 1, float sz = 1);
+};
+```
+
+<ParamField path="center" type="vec3" required>
+  World-space position of the point.
+</ParamField>
+
+<ParamField path="color" type="int" required>
+  Packed ARGB color value. Example: `0xffffffff` is opaque white, `0xffff0000` is opaque red.
+</ParamField>
+
+<ParamField path="op" type="float" default="1">
+  Point opacity in `[0, 1]`. Multiplied with the scene's global `points_opacity` state variable.
+</ParamField>
+
+<ParamField path="sz" type="float" default="1">
+  Radius multiplier. Multiplied with the scene's `points_radius_multiplier` state variable and `geom_mean_size` to produce the final pixel radius.
+</ParamField>
+
+### `Line`
+
+Defined in `src/Host_Device_Shared/ThreeDimensionStructs.h`. Usable on both CPU and GPU.
+
+```cpp
+struct Line {
+    int   color;      // Packed ARGB color
+    float opacity;    // [0, 1]
+    vec3  start;      // World-space start point
+    vec3  end;        // World-space end point
+    bool  is_dashed;  // true for a dashed line style
+
+    Line(const vec3& s, const vec3& e, int clr, float op, bool dashed);
+};
+```
+
+<ParamField path="s" type="vec3" required>
+  World-space start point of the line segment.
+</ParamField>
+
+<ParamField path="e" type="vec3" required>
+  World-space end point of the line segment.
+</ParamField>
+
+<ParamField path="clr" type="int" required>
+  Packed ARGB color (same format as `Point::color`).
+</ParamField>
+
+<ParamField path="op" type="float" required>
+  Opacity in `[0, 1]`. Multiplied with the scene's global `lines_opacity` state variable.
+</ParamField>
+
+<ParamField path="dashed" type="bool" required>
+  When `true`, the CUDA kernel renders the segment as a dashed line.
+</ParamField>
+
+---
+
+## Animating the Camera
+
+The camera is fully controlled via state variables. Smooth orbits and fly-throughs are achieved with `manager.transition()`:
+
+<CodeGroup>
+
+```cpp Orbit around the origin
+// Rotate continuously using a time-based quaternion
+scene.manager.set({
+    {"slow", "<tx> .2 *"},  // tx is a timer
+    {"q1",   "<slow> sin"},
+    {"qj",   "<slow> cos"},
+    {"qi",   "<slow> sin .2 *"},
+    {"d",    "4"},
+});
+```
+
+```cpp Zoom in
+// Move the camera closer by decreasing d
+scene.manager.transition(MICRO, "d", "2");
+```
+
+```cpp Pan to a new focus
+scene.manager.transition(MICRO, "x", "1.5");
+scene.manager.transition(MICRO, "y", "0");
+scene.manager.transition(MICRO, "z", "0.5");
+```
+
+</CodeGroup>
+
+---
+
+## Full Example — ThreeDAlgebraDemo Axis Setup
+
+This excerpt from `src/Projects/Demos/ThreeDAlgebraDemo.cpp` shows how to build a scene with labeled state-driven points and static colored axis lines:
+
+```cpp
+#include "Scenes/Common/ThreeDimensionScene.h"
+
+// Inside render_video():
+auto basis = make_shared<ThreeDimensionScene>(vec2(.6, 1.0));
+
+basis->manager.set({
+    {"point_r",              "32"},
+    {"point_g",              "32"},
+    {"point_b",              "128"},
+    {"point_size",           "1.6"},
+    {"point_labels_size",    "2"},
+    {"points_radius_multiplier", "2"},
+
+    // State-driven points (xx, xy, xz, yy, yz, zz basis elements)
+    {"point0.x", "1"}, {"point0.y", "0"}, {"point0.z", "0"}, {"point0.a", "1"},
+    {"point1.x", "0"}, {"point1.y", "1"}, {"point1.z", "0"}, {"point1.a", "1"},
+    {"point2.x", "0"}, {"point2.y", "0"}, {"point2.z", "1"}, {"point2.a", "1"},
+    {"point3.x", "-1"},{"point3.y", "0"}, {"point3.z", "0"}, {"point3.a", "1"},
+
+    // Spinning camera
+    {"slow", "<tx> .2 *"},
+    {"d",    "4"},
+    {"q1",   "<slow> sin"},
+    {"qi",   "<slow> sin .2 *"},
+    {"qj",   "<slow> cos"},
+});
+
+basis->point_names = {
+    {0, "xx"}, {1, "xy"}, {2, "xz"}, {3, "yy"},
+};
+
+// Add colored axis lines
+float axis = 1.2f;
+basis->add_line(Line(vec3(-axis,0,0), vec3(axis,0,0), 0xffff0000, 1.0f, false)); // X red
+basis->add_line(Line(vec3(0,-axis,0), vec3(0,axis,0), 0xff00ff00, 1.0f, false)); // Y green
+basis->add_line(Line(vec3(0,0,-axis), vec3(0,0,axis), 0xff0000ff, 1.0f, false)); // Z blue
+```

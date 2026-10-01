@@ -1,47 +1,266 @@
 ---
-title: "Quickstart"
-description: "Begin with a guide on the fastest path to a successful outcome"
+title: "Quickstart: Render Your First SwapTube Video Today"
+sidebarTitle: "Quickstart"
+description: "Write a render_video() function, animate a MandelbrotScene with state transitions, run go.sh, and find the finished video in out/ — in under ten minutes."
 ---
 
-Describe how someone begins using your product. What is the first thing they need to do? Are there any prerequisites?
-
-A quickstart should take someone from zero to using your product. They'll get a quick win and a sense of what they can accomplish.
-
-## Prerequisites
-
-Before you begin, you must have:
-
-- Requirement one (for example, Node.js 18+, a free account, an API key)
-- Requirement two (for example, a compatible device, a compatible browser, a compatible operating system)
-
-## Get started
+Every SwapTube video starts from a single C++ function: `render_video()`. You write that function in a `.cpp` file inside `src/Projects/`, call `./go.sh` with your project name and desired resolution, and SwapTube handles compilation, smoketesting, GPU rendering, and FFmpeg encoding. This guide walks through the entire flow using the `MandelbrotDemo` as a worked example — the same file that ships with the repository under `src/Projects/Demos/MandelbrotDemo.cpp`.
 
 <Steps>
-  <Step title="Install">
-    Describe how to install your product or sign up.
+  <Step title="Create your project file">
+    Add a new `.cpp` file anywhere under `src/Projects/`. SwapTube's build system discovers project files by name using `find`, so the subdirectory does not matter. A good starting location is `src/Projects/` itself:
 
     ```bash
-    npm install your-package
+    touch src/Projects/MyFirstVideo.cpp
     ```
-  </Step>
-  <Step title="Configure">
-    Describe any setup or configuration needed before first use.
 
-    ```bash
-    your-cli init
+    Every project file must define exactly one function with this signature:
+
+    ```cpp
+    void render_video();
     ```
+
+    The framework provides `stage_macroblock`, `render_microblock`, `SilenceBlock`, `FileBlock`, `set_for_real`, and all scene headers — you do not need to include `main.cpp` or write any boilerplate beyond the headers for the scenes you use.
   </Step>
-  <Step title="Run it">
-    Show the first thing a user does to see it working.
+
+  <Step title="Write render_video()">
+    Open `src/Projects/MyFirstVideo.cpp` and write the following. This is a minimal adaptation of `MandelbrotDemo.cpp`, the canonical starting-point demo:
+
+    ```cpp
+    #include "../Scenes/Math/MandelbrotScene.h"
+
+    void render_video() {
+        MandelbrotScene ms;
+
+        // Set the initial zoom level immediately (no animation).
+        ms.manager.set("zoom", ".2");
+
+        // Declare transitions that will animate over the first microblock.
+        ms.manager.transition(MICRO, {
+            {"pixel_param_z", "1"},
+            {"pixel_param_c", "0"},
+            {"seed_c_r",      ".4"},
+            {"seed_c_i",      ".1"},
+        });
+
+        // Stage a 4-second silence macroblock with exactly 2 microblocks.
+        stage_macroblock(SilenceBlock(4), 2);
+
+        // First microblock: the transitions declared above play out.
+        ms.render_microblock();
+
+        // Animate zoom from .2 to 1 over the second microblock.
+        ms.manager.transition(MICRO, "zoom", "1");
+        ms.render_microblock();
+    }
+    ```
+
+    **What this does, line by line:**
+
+    - `MandelbrotScene ms` — constructs a scene that GPU-renders the Mandelbrot set. The scene owns a pixel buffer and a `StateManager`.
+    - `ms.manager.set("zoom", ".2")` — immediately sets the `zoom` state variable to `0.2`. No animation; it takes effect from the very first frame.
+    - `ms.manager.transition(MICRO, {...})` — queues up multiple state transitions that will animate smoothly over one microblock. The RPN equations are constant values here, so each variable ramps from its current value to the specified target.
+    - `stage_macroblock(SilenceBlock(4), 2)` — declares a 4-second silent audio segment with 2 microblocks. The second argument overrides the microblock count that would otherwise be inferred from the smoketest.
+    - `ms.render_microblock()` — renders all the frames for the current microblock and advances internal state.
+
+    <Tip>
+      You can pass a `StateSet` (an `initializer_list` of `{variable, equation}` pairs) to `transition` as shown above, or call `transition` once per variable. Both forms are equivalent.
+    </Tip>
+  </Step>
+
+  <Step title="Run go.sh">
+    From the repository root, call `go.sh` with your project name, width, height, and framerate:
 
     ```bash
-    your-cli start
+    ./go.sh MyFirstVideo 1920 1080 30
+    ```
+
+    `go.sh` accepts four positional arguments followed by optional flags:
+
+    | Argument | Description |
+    |---|---|
+    | `ProjectName` | Matches the `.cpp` filename (without extension) anywhere under `src/Projects/` |
+    | `VideoWidth` | Output width in pixels (e.g. `1920`) |
+    | `VideoHeight` | Output height in pixels (e.g. `1080`) |
+    | `Framerate` | Frames per second; must evenly divide the audio sample rate of 48000 |
+
+    **Optional flags:**
+
+    | Flag | Effect |
+    |---|---|
+    | `-s` | Smoketest only — skips the full render after the smoketest passes |
+    | `-a` | Exclude all audio (voice and SFX) from the output video |
+    | `-x` | Also emit voice and SFX as separate tracks alongside the merged track |
+    | `-c CUDA` or `-c HIP` | Override the auto-detected compute backend |
+    | `-g` | Run the binary under `gdb` for debugging |
+
+    Examples:
+
+    ```bash
+    # Development cycle — smoketest only, fast turnaround
+    ./go.sh MyFirstVideo 640 360 30 -s
+
+    # Full 1080p render, no audio (useful while tuning visuals)
+    ./go.sh MyFirstVideo 1920 1080 30 -a
+
+    # Force CUDA backend explicitly
+    ./go.sh MyFirstVideo 1920 1080 30 -c CUDA
+    ```
+
+    <Note>
+      `go.sh` first checks for `cmake`, `ninja`, `gnuplot`, and a valid MicroTeX build. If MicroTeX is missing it offers to clone and compile it automatically. See the [Installation guide](/installation) for details.
+    </Note>
+  </Step>
+
+  <Step title="Watch the build and smoketest output">
+    A successful run looks like this in the terminal:
+
+    ```
+    go.sh: Building project MyFirstVideo with output folder name 2025-01-15_14.32.07
+
+    ===============================================
+    =================== COMPILE ===================
+    ===============================================
+    go.sh: Running `cmake ..` from build directory
+    ...
+    go.sh: Compiling...
+
+    ===============================================
+    ===================== RUN =====================
+    ===============================================
+    Parsing command line arguments...
+    Width: 320, Height: 180, Framerate: 30, Samplerate: 48000,
+    Smoketest: true, Include Audio: true, Audio SFX: false,
+    Microblock Counts: .../out/MyFirstVideo/2025-01-15_14.32.07/microblock_counts.txt
+
+    Smoketesting video...
+    ...
+
+    ====================
+    Completed successfully!
+    ====================
+
+    ===============================================
+    ===================== RUN =====================
+    ===============================================
+    ...
+    Rendering video...
+
+    ====================
+    Completed successfully!
+    ====================
+    ```
+
+    If the smoketest fails (exit code 2), SwapTube prints a red exception trace. The most common causes are a mismatched microblock count (the declared count in `stage_macroblock` doesn't match the number of `render_microblock()` calls) or a missing dependency.
+  </Step>
+
+  <Step title="Find your rendered video">
+    Output goes to `out/<ProjectName>/<timestamp>/`. The directory contains:
+
+    ```
+    out/MyFirstVideo/2025-01-15_14.32.07/
+    ├── output.mp4               # The finished video
+    ├── output.srt               # Subtitle file (populated from FileBlock text)
+    ├── microblock_counts.txt    # Recorded by the smoketest; used by the render
+    ├── frames/                  # Individual PNG frames (written during render)
+    ├── data/                    # Numeric data tables for gnuplot
+    └── plots/                   # Generated debug plots
+    ```
+
+    `go.sh` automatically plays back the video with `./play.sh MyFirstVideo` when the render completes. You can replay it at any time:
+
+    ```bash
+    ./play.sh MyFirstVideo
     ```
   </Step>
 </Steps>
 
-<Tip>
-  Give people a way to get help. This could be a link to a support page, a chat with a customer support agent, or a forum for your product.
+## Complete Working Demo: MandelbrotDemo
 
-  Example: Need help? Reach out to us at [support@yourcompany.com](mailto:support@yourcompany.com).
-</Tip>
+The full source of `src/Projects/Demos/MandelbrotDemo.cpp` as it ships in the repository:
+
+```cpp
+#include "../Scenes/Math/MandelbrotScene.h"
+
+void render_video() {
+    MandelbrotScene ms;
+    ms.manager.set("zoom", ".2");
+    ms.manager.transition(MICRO, {
+        {"pixel_param_z", "1"},
+        {"pixel_param_c", "0"},
+        {"seed_c_r",      ".4"},
+        {"seed_c_i",      ".1"},
+    });
+    stage_macroblock(SilenceBlock(4), 2);
+    ms.render_microblock();
+    ms.manager.transition(MICRO, "zoom", "1");
+    ms.render_microblock();
+}
+```
+
+Run it directly:
+
+```bash
+./go.sh MandelbrotDemo 1920 1080 30
+```
+
+## Compositing Multiple Scenes
+
+Once you are comfortable with a single scene, `CompositeScene` lets you layer and animate multiple scenes on screen simultaneously. The following is the full source of `src/Projects/Demos/CompositeDemo.cpp`:
+
+```cpp
+#include "../Scenes/Common/CompositeScene.h"
+#include "../Scenes/Math/MandelbrotScene.h"
+
+void render_video() {
+    CompositeScene cs;
+    stage_macroblock(SilenceBlock(5), 5);
+
+    shared_ptr<MandelbrotScene> ms = make_shared<MandelbrotScene>();
+    cs.add_scene(ms, "ms");
+
+    // Microblock 1: scene appears at default position
+    cs.render_microblock();
+
+    // Microblock 2: animate the child scene's width and height with time-based equations
+    ms->manager.transition(MICRO, "w", "{t} 3 * sin .3 * .5 +");
+    ms->manager.transition(MICRO, "h", "{t} 5 * cos .3 * .5 +");
+    cs.render_microblock();
+
+    // Microblock 3: return to fixed size
+    ms->manager.transition(MICRO, "w", ".5");
+    ms->manager.transition(MICRO, "h", ".5");
+    cs.render_microblock();
+
+    // Microblock 4: animate position in a circular orbit using global time
+    cs.manager.transition(MICRO, "ms.x", "{t} sin .5 * .5 +");
+    cs.manager.transition(MICRO, "ms.y", "{t} cos .5 * .5 +");
+    cs.render_microblock();
+
+    // Microblock 5: rotate the child scene continuously
+    cs.manager.transition(MICRO, "ms.angle", "{t}");
+    cs.render_microblock();
+}
+```
+
+Run it:
+
+```bash
+./go.sh CompositeDemo 1920 1080 30
+```
+
+Key patterns to note:
+
+- Child scenes are added to a `CompositeScene` via `add_scene(shared_ptr<Scene>, "state_name")`. The state name becomes the namespace prefix for that child's position, opacity, and angle variables in the parent's `StateManager` — e.g. `"ms.x"`, `"ms.y"`, `"ms.angle"`.
+- The `{t}` global variable is the elapsed video time in seconds. Plugging it directly into an RPN equation makes the parameter evolve continuously across frames rather than interpolating between two fixed endpoints.
+- Transitions can be added before each `render_microblock()` call to build up complex multi-step animations within a single macroblock.
+
+## Validating Your Installation with test.sh
+
+To run the smoketest suite for every demo at once:
+
+```bash
+./test.sh
+```
+
+This compiles all `src/Projects/Demos/*.cpp` files and smoketests each one at 160×90. No videos are written. It is the fastest way to confirm that a new dependency install or code change has not broken existing projects.

@@ -1,0 +1,217 @@
+---
+title: "StateManager: DAG-Based Per-Frame Variable Equations"
+sidebarTitle: "State Manager"
+description: "A deep dive into SwapTube's StateManager — how RPN equations, dependency ordering, and transition types drive every animated value in a scene."
+---
+
+Every Scene in SwapTube owns a `StateManager` instance at `scene.manager`. The StateManager is a directed acyclic graph (DAG) of variable definitions, where each variable holds a numeric value computed from an RPN (postfix) equation. On every rendered frame the StateManager evaluates all equations in dependency order, producing a consistent snapshot of the scene's numeric state that the GPU draw call reads. This design means that animations, layout positions, opacity values, camera parameters, and any other per-frame number are all expressed declaratively as equations rather than imperative per-frame callbacks.
+
+## Variable Notation
+
+Equations are plain strings containing space-separated tokens. SwapTube's parser recognises four kinds of token that reference other variables, distinguished by their bracket characters:
+
+| Syntax | Kind | Description |
+|---|---|---|
+| `<opacity>` | Local variable | A variable defined in **this** scene's StateManager |
+| `[parent_var]` | Parent variable | A variable from the **parent** scene's StateManager (requires `set_parent()`) |
+| `{microblock_fraction}` | Global variable | One of the engine-managed globals listed below |
+| `(a)` | CUDA passthrough | An index (a–j) into the per-pixel CUDA tag array |
+
+### Global variables
+
+These are managed automatically by the render loop and are always available:
+
+| Name | Description |
+|---|---|
+| `{frame_number}` | Absolute frame index since the start of the video |
+| `{t}` | Time in seconds elapsed since the start of the video |
+| `{macroblock_number}` | Count of completed Macroblocks |
+| `{microblock_number}` | Count of completed Microblocks |
+| `{macroblock_fraction}` | Progress through the current Macroblock (0 → 1) |
+| `{microblock_fraction}` | Progress through the current Microblock (0 → 1) |
+| `{voice}` | Loudness of the voice track for this frame (max L-channel sample as float) |
+| `{VIDEO_WIDTH}` / `{VIDEO_HEIGHT}` | Pixel dimensions of the output video |
+
+## RPN Equation Syntax
+
+Equations are written in Reverse Polish Notation (postfix): operands appear before the operator that consumes them. Every token is separated by a single space.
+
+```cpp
+// Infix:    0.5 * sin(t) + 0.5
+// RPN:
+"{t} sin .5 * .5 +"
+```
+
+Constant numbers (e.g. `.5`, `3.14`, `-1`) are pushed onto the evaluation stack. Then operators pop their arguments off the stack and push the result.
+
+### Available operators
+
+| Token | Arity | Description |
+|---|---|---|
+| `+` `-` `*` `/` `^` `%` | 2 | Arithmetic |
+| `sin` `cos` `atan2` | 1 or 2 | Trigonometry |
+| `exp` `sqrt` `abs` `log` | 1 | Common math |
+| `floor` `ceil` `^2` | 1 | Rounding / squaring |
+| `pi` `e` `phi` | 0 | Mathematical constants |
+| `>` `<` `>=` `<=` `==` `!==` | 2 | Comparisons (return 0.0 or 1.0) |
+| `min` `max` | 2 | Clamping |
+| `lerp` | 3 | Linear interpolation: `a b t lerp` → `a + t*(b-a)` |
+| `smoothlerp` | 3 | Smoothstep interpolation: same signature as `lerp` |
+| `bezier` | 5 | Bezier curve: `p0 p1 p2 p3 t bezier` |
+| `logistic` | 1 | Logistic (sigmoid) function |
+
+<Tip>
+`smoothlerp` is the default used by `transition()`. It produces the characteristic ease-in / ease-out motion that makes SwapTube animations look polished without any extra work.
+</Tip>
+
+## `set()` — Defining Variables
+
+`set()` registers or replaces a variable with a new equation. The variable takes on the computed value of the equation on the very next `evaluate_all()` call (i.e. the next frame).
+
+```cpp
+ms.manager.set("zoom", ".2");
+ms.manager.set({
+    {"pixel_param_z", "1"},
+    {"pixel_param_c", "0"},
+    {"seed_c_r",       ".4"},
+    {"seed_c_i",       ".1"},
+});
+```
+
+*(From `MandelbrotDemo.cpp`)*
+
+`set()` returns a `StateSet` — a `std::unordered_map<string, string>` — containing the **previous** equation for the variable (if one existed). This makes it easy to restore prior state.
+
+<Note>
+Variable names must match `^[a-zA-Z0-9._]+$`. Names with dots (e.g. `ms.x`) are used by `CompositeScene` to address child-scene positions.
+</Note>
+
+Calling `set()` on a variable that is currently mid-transition cancels the transition silently: the `.post_transition` helper variable is removed and the pending endpoint is discarded.
+
+## `transition()` — Animated Changes
+
+`transition()` replaces a variable's equation with a **lerp** from its current value to a new target, driven by either `{microblock_fraction}` or `{macroblock_fraction}`.
+
+```cpp
+// TransitionType: MICRO or MACRO
+ms.manager.transition(MICRO, "zoom", "1");
+```
+
+Internally, if the current equation for `zoom` is `".2"` and the target is `"1"`, the StateManager rewrites it to:
+
+```text
+.2 1 {microblock_fraction} smoothlerp
+```
+
+and stores `"1"` as `zoom.post_transition`. When `render_microblock()` (or the Macroblock boundary, for MACRO) completes, `close_transitions()` is called and `zoom` snaps to the final equation.
+
+```cpp
+// Multiple variables transitioned simultaneously:
+ms.manager.transition(MICRO, {
+    {"pixel_param_z", "1"},
+    {"pixel_param_c", "0"},
+    {"seed_c_r",       ".4"},
+    {"seed_c_i",       ".1"},
+});
+```
+
+Pass `smooth = false` as the final argument to use linear `lerp` instead of `smoothlerp`.
+
+### TransitionType
+
+```cpp
+enum TransitionType {
+    MICRO,  // Transition completes at the end of the current Microblock
+    MACRO   // Transition completes at the end of the current Macroblock
+};
+```
+
+`MACRO` transitions span the entire audio segment, useful for slow background changes that should evolve continuously as narration plays. `MICRO` transitions snap to their endpoint when `render_microblock()` returns.
+
+<Warning>
+Nested transitions are not supported. Calling `transition()` on a variable that is already in transition throws a `runtime_error`. Use `set()` to forcibly override a variable mid-transition, which cancels the transition.
+</Warning>
+
+## Dependency Resolution Order
+
+The StateManager is a true DAG. When `evaluate_all()` is called on a frame, it iterates through all variables and evaluates them in an order that satisfies dependencies: a variable is only computed after all variables it references locally (`<...>` tokens) have been computed.
+
+On the **first** frame after a `set()` or `remove()`, the compute order is rediscovered by repeatedly scanning for variables whose dependencies are all satisfied. Once a valid order is found it is cached in `last_compute_order` and reused on every subsequent frame until the graph changes. This makes steady-state per-frame evaluation very cheap.
+
+If a cycle is detected — for example `x = <y> 1 +` and `y = <x> 1 +` — `evaluate_all()` throws:
+
+```text
+error: variable dependency graph appears not to be a DAG!
+```
+
+<Accordion title="What happens if a dependency variable doesn't exist?">
+If an equation references a local variable `<foo>` that has never been `set()`, `evaluate_all()` throws at resolution time:
+
+```text
+error: attempted to access variable foo during evaluation of bar := <foo> 1 +,
+but it does not exist in this StateManager!
+```
+
+Global variables (`{...}`) silently return `0` on the very first frame if they have not yet been published (because scene render order can be indeterminate on frame 0), and then throw on all subsequent frames if still missing.
+</Accordion>
+
+## Parent/Child State Sharing via `set_parent()`
+
+Child scenes (e.g. a scene added to a `CompositeScene`) can read their parent's local variables using the `[varname]` notation. This is wired up by calling `set_parent()` on the child's StateManager:
+
+```cpp
+child.manager.set_parent(&parent.manager, "child_identifier");
+```
+
+Once a parent is set, any equation containing `[foo]` will read `foo` from the parent's local variable table at evaluation time. This is used extensively by `CompositeScene` to push layout properties (position, rotation, opacity) from the parent into the child.
+
+A StateManager can also be **subjugated** with `set_subjugated(true)`. When a subjugated manager receives `get_state()`, it forwards the call entirely to its parent, so the child scene reads all of its rendering state from the parent. This is used for scenes that are purely decorative containers with no independent state.
+
+## Real-World Equation Examples
+
+<CodeGroup>
+
+```cpp CompositeDemo.cpp — Oscillating width driven by elapsed time
+ms->manager.transition(MICRO, "w", "{t} 3 * sin .3 * .5 +");
+ms->manager.transition(MICRO, "h", "{t} 5 * cos .3 * .5 +");
+```
+
+```cpp CompositeDemo.cpp — Orbiting position driven by elapsed time
+cs.manager.transition(MICRO, "ms.x", "{t} sin .5 * .5 +");
+cs.manager.transition(MICRO, "ms.y", "{t} cos .5 * .5 +");
+```
+
+```cpp CompositeDemo.cpp — Continuously increasing rotation
+cs.manager.transition(MICRO, "ms.angle", "{t}");
+```
+
+```cpp MandelbrotDemo.cpp — Static set then animated zoom
+ms.manager.set("zoom", ".2");
+// ...later:
+ms.manager.transition(MICRO, "zoom", "1");
+```
+
+</CodeGroup>
+
+## Timer Variables
+
+The StateManager provides a convenience method for creating elapsed-time variables relative to a point in the video:
+
+```cpp
+manager.begin_timer("scene_timer");
+// scene_timer is now defined as "{t} <start_t> -",
+// where <start_t> is the value of {t} at the moment of the call.
+```
+
+This is useful for driving per-scene animations that should restart from zero each time the scene becomes active, independently of the absolute video time `{t}`.
+
+## Removing Variables
+
+`remove()` deletes a variable and, if it is mid-transition, also removes its `.post_transition` companion:
+
+```cpp
+manager.remove("opacity");
+manager.remove({"opacity", "camera_x", "camera_y"});
+```
+
+Like `set()`, `remove()` clears the cached compute order so that the next `evaluate_all()` call rediscovers a valid ordering.

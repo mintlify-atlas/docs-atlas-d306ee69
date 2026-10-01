@@ -1,0 +1,155 @@
+---
+title: "SwapTube: GPU-Accelerated C++ Math Video Framework"
+sidebarTitle: "Introduction"
+description: "SwapTube is a C++/CUDA framework for making math YouTube videos — covering its scene system, state animation, Macroblock timeline, and FFmpeg pipeline."
+---
+
+SwapTube is the rendering engine behind the [2swap YouTube channel](https://www.youtube.com/@twoswap). It is a GPU-accelerated C++/CUDA framework that produces mathematical videos from code: you write a `render_video()` function that describes what to show and when, and SwapTube handles every frame of video and every millisecond of audio encoding from there. The project deliberately avoids high-level graphics libraries — almost everything above the FFmpeg encoding layer is custom-written — giving you direct, low-level control over every pixel on screen.
+
+<CardGroup cols={3}>
+  <Card title="Installation" icon="screwdriver-wrench" href="/installation">
+    Install system dependencies, build MicroTeX, and verify your setup on Linux, WSL2, or Docker.
+  </Card>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Create your first project file and render a working Mandelbrot video in minutes.
+  </Card>
+  <Card title="Discord Community" icon="discord" href="https://discord.gg/a786NZXYQ3">
+    Ask questions, share projects, and follow development on the Learn SwapTube Discord.
+  </Card>
+</CardGroup>
+
+## What SwapTube Does
+
+SwapTube takes a C++ project file — a single `render_video()` function — and compiles it into a binary that, when run, writes a complete video to disk. The binary handles:
+
+- **Frame rendering** on the GPU via CUDA (NVIDIA) or HIP/ROCm (AMD)
+- **Audio mixing** from recorded `.wav` narration files, generated sample buffers, or silence
+- **Video encoding** through FFmpeg 5.0+, including subtitle tracks
+- **State animation** via a dependency-graph evaluator that smoothly interpolates every numeric parameter across microblock boundaries
+
+The output lands in `out/<ProjectName>/<timestamp>/`, timestamped so successive renders never overwrite each other.
+
+## GPU Rendering: CUDA and HIP
+
+Every computationally intensive scene — fractals, 3-D projections, volumetric renders — executes its per-pixel work as a CUDA kernel on the GPU. CMake detects your hardware at configure time and selects the right backend automatically. On AMD machines, `hipify-perl` translates the `src/CUDA/` sources into `src/HIP/` at build time; the CUDA sources remain the canonical source of truth and should never be edited in their HIP form.
+
+If you need to override the detected backend, pass `-c CUDA` or `-c HIP` to `go.sh`:
+
+```bash
+./go.sh MandelbrotDemo 1920 1080 30 -c CUDA
+```
+
+<Note>
+  A CUDA-compatible NVIDIA GPU **or** a HIP-compatible AMD GPU is required. CPU-only builds are not currently supported. MacOS and Windows native builds are untested; Windows users should use WSL2.
+</Note>
+
+## The Scene System
+
+A **Scene** is the fundamental rendering unit. Each scene owns a pixel buffer on the GPU, a `StateManager`, and a `draw()` implementation. SwapTube ships with a rich library of built-in scenes organised under `src/Scenes/`:
+
+| Category | Example Scenes |
+|---|---|
+| **Math** | `MandelbrotScene`, `MandelbulbScene`, `RootFractalScene`, `VolumetricFractalScene`, `RealFunctionScene` |
+| **Geometry / Algebra** | `GeometryScene`, `ThreeDAlgebraScene`, `TwoDAlgebraScene`, `GraphScene`, `GeodesicScene` |
+| **Physics** | `PendulumScene`, `ManifoldScene`, `OuterBilliardsScene` |
+| **Media** | `LatexScene`, `PngScene` |
+| **Common** | `CompositeScene`, `BackgroundScene`, `CoordinateScene` |
+
+`CompositeScene` is the workhorse for multi-element layouts: it holds a collection of child scenes and manages each one's position, opacity, and rotation through the parent state manager. Child scenes can be added at any time during `render_video()` and their on-screen properties animated independently.
+
+## State and Animation
+
+Every scene exposes a public `StateManager manager`. A `StateManager` is a directed acyclic graph of named variables whose values are computed frame-by-frame using **Reverse Polish Notation** equations. Variables can reference global sensors:
+
+| Token | Meaning |
+|---|---|
+| `{microblock_fraction}` | Progress through the current microblock, `0.0` → `1.0` |
+| `{macroblock_fraction}` | Progress through the current macroblock, `0.0` → `1.0` |
+| `{t}` | Elapsed time in seconds since the video started |
+| `{frame_number}` | Absolute frame index |
+
+The two key calls on a `StateManager` are:
+
+- **`set(variable, equation)`** — sets a variable to a fixed value or expression immediately.
+- **`transition(TransitionType, variable, equation)`** — animates the variable from its current value to the target, smoothly over either a `MICRO` (microblock) or `MACRO` (macroblock) time window.
+
+The transition type constants are `MICRO` and `MACRO`, defined in `TransitionType.h`. An example from `CompositeDemo.cpp` drives a child scene's position with a sine wave over time:
+
+```cpp
+cs.manager.transition(MICRO, "ms.x", "{t} sin .5 * .5 +");
+cs.manager.transition(MICRO, "ms.y", "{t} cos .5 * .5 +");
+cs.render_microblock();
+```
+
+Because every variable resolves through the DAG on every frame, you never write a loop over frames — SwapTube's render loop does that for you.
+
+## The Macroblock / Microblock Timeline
+
+SwapTube organises time in two layers:
+
+**Macroblocks** are the top-level atomic units of audio. In practice a macroblock usually corresponds to one sentence of narration. There are three concrete types:
+
+- `FileBlock("narration text")` — derives a `.wav` filename from the subtitle text and writes an entry to `record_list.tsv` so you can record narration later with `record_audios.py`.
+- `SilenceBlock(duration_seconds)` — inserts a silent gap of the given length.
+- `GeneratedBlock(leftBuffer, rightBuffer)` — uses a pair of pre-computed `int32_t` sample arrays as the audio track.
+
+A macroblock is _staged_ globally, then the scene renders one or more **microblocks**:
+
+```cpp
+stage_macroblock(FileBlock("The Mandelbrot set lives in the complex plane."));
+scene.render_microblock();  // one visual segment for this sentence
+```
+
+**Microblocks** are the atomic visual units. Each call to `render_microblock()` draws a sequence of frames spanning a fraction of the parent macroblock's duration. Transitions declared with `MICRO` animate over a single microblock; transitions declared with `MACRO` span the entire macroblock regardless of how many microblocks it contains.
+
+This two-layer model means you never specify frame counts manually: the audio duration of each `FileBlock` drives the macroblock length, and SwapTube divides that time evenly across however many microblocks you render.
+
+## The Smoketest Pipeline
+
+Every `./go.sh` invocation runs a mandatory **smoketest** before the full render begins. The smoketest executes `render_video()` at 320×180, counts every call to `render_microblock()`, draws one test frame per microblock, and records the counts to `out/<project>/<timestamp>/microblock_counts.txt`. Only if the smoketest passes does `go.sh` run the full render at the requested resolution, using those recorded counts to validate timing consistency.
+
+The smoketest is also the mechanism that populates `media/<ProjectName>/record_list.tsv` — you can record your narration audio after a smoketest-only run without waiting for a full render.
+
+```bash
+# Smoketest only — useful during development
+./go.sh MyProject 1920 1080 30 -s
+
+# Smoketest + full render (default)
+./go.sh MyProject 1920 1080 30
+```
+
+While developing, `set_for_real(false)` lets you skip encoding earlier sections of a long video and jump straight to the part you are working on:
+
+```cpp
+set_for_real(false);
+// sections that run but do not encode
+set_for_real(true);
+// sections that encode normally
+```
+
+## Repository Layout
+
+```text
+swaptube/
+├── src/
+│   ├── Core/          # Main loop, macroblock types, StateManager, smoketest logic
+│   ├── Scenes/        # Built-in scene library (Math, Physics, Common, Media)
+│   ├── CUDA/          # GPU kernels — canonical source for both CUDA and HIP builds
+│   ├── DataObjects/   # Domain objects (graphs, grids, pendulums, Rubik's cubes, …)
+│   ├── IO/            # FFmpeg writer, audio writer, PNG loader, LaTeX converter
+│   └── Projects/      # Your project files live here; Demos/ has working examples
+├── out/               # Rendered output, organised by project and timestamp
+├── media/             # Input assets: recorded .wav files, source PNGs, LaTeX cache
+├── build/             # CMake / Ninja artefacts and compiled binary
+├── docker/            # Community-maintained Docker setup
+├── go.sh              # Build, smoketest, and render entry point
+├── test.sh            # Smoketests every demo in src/Projects/Demos/
+└── record_audios.py   # Bulk narration recording helper
+```
+
+## Community and Support
+
+- **Tutorial video**: [SwapTube Tutorial on YouTube](https://www.youtube.com/watch?v=paqBduieRks) — a full walkthrough by 2swap.
+- **Discord**: [discord.gg/a786NZXYQ3](https://discord.gg/a786NZXYQ3) — the official Learn SwapTube server for questions, discussion, and project sharing.
+- **YouTube channel**: [@twoswap](https://www.youtube.com/@twoswap) — videos produced with SwapTube.
+- **Experimental Windows/MSVC fork**: [meghanto/swaptube](https://github.com/meghanto/swaptube) — community-maintained, not officially supported.

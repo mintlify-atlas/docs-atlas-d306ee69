@@ -1,0 +1,275 @@
+---
+title: "Macroblock Types and the stage_macroblock() Functions"
+sidebarTitle: "Macroblocks"
+description: "Reference for SilenceBlock, FileBlock, GeneratedBlock, and CompositeBlock, plus stage_macroblock() overloads that commit audio segments to the timeline."
+---
+
+Every segment of audio in a SwapTube video is represented by a **Macroblock** — the atomic unit of sound that anchors a slice of time in the rendered output. When you call `stage_macroblock()`, you commit one audio segment globally and SwapTube records its duration in frames; the visual side of that segment is then rendered microblock-by-microblock immediately afterward. The four concrete Macroblock subclasses cover the most common authoring workflows: narrated speech read from a pre-recorded file, pure silence, programmatically synthesized audio, and arbitrary combinations of the above via a composite wrapper.
+
+---
+
+## `stage_macroblock()`
+
+The two overloads of `stage_macroblock()` are the only way to push a Macroblock onto the timeline. They must be called **before** any `render_microblock()` calls for that segment, and the previous macroblock's microblocks must all have been consumed before staging the next one.
+
+<ParamField path="block" type="const Macroblock&" required>
+  The macroblock to commit. Any concrete subclass — `SilenceBlock`, `FileBlock`,
+  `GeneratedBlock`, or `CompositeBlock` — is accepted through the base reference.
+</ParamField>
+
+```cpp cpp
+// One-argument overload: microblock count is inferred from the smoketest recording.
+void stage_macroblock(const Macroblock& block);
+```
+
+<ParamField path="block" type="const Macroblock&" required>
+  The macroblock to commit.
+</ParamField>
+
+<ParamField path="n" type="int" required>
+  The number of microblocks to allocate for this macroblock during the full render.
+  Must be greater than zero. When this overload is used, SwapTube uses `n` instead
+  of the count recorded during smoketesting. A console warning is printed if the two
+  values differ.
+</ParamField>
+
+```cpp cpp
+// Two-argument overload: explicitly declare the microblock count.
+void stage_macroblock(const Macroblock& block, int n);
+```
+
+<Warning>
+  Calling `stage_macroblock()` while `remaining_microblocks_in_macroblock != 0`
+  (i.e., the previous macroblock still has un-rendered microblocks) throws a
+  `runtime_error`. Always call `render_microblock()` the correct number of times
+  before staging the next block.
+</Warning>
+
+<Note>
+  The two-argument overload is useful when the render should deliberately allocate
+  a different number of microblocks than the smoketest observed — for example, when
+  a later section of the video has more complex transitions that require finer
+  subdivision than you want to prototype during development.
+</Note>
+
+---
+
+## `SilenceBlock`
+
+`SilenceBlock` produces a segment of complete silence for the specified duration. It is the simplest macroblock type and is useful for pauses, title cards, or any visual segment where no narration is required.
+
+```cpp cpp
+SilenceBlock(double duration_seconds);
+```
+
+<ParamField path="duration_seconds" type="double" required>
+  Length of the silent segment in seconds. Converted internally to frames using the
+  configured video framerate. Must be greater than zero; a non-positive duration
+  throws `std::invalid_argument`.
+</ParamField>
+
+<CodeGroup>
+```cpp Basic pause
+// A 2-second silent pause rendered as a single microblock.
+stage_macroblock(SilenceBlock(2.0));
+myScene.render_microblock();
+```
+
+```cpp Multiple microblocks
+// A 5-second pause subdivided into 5 microblocks for finer animation control.
+stage_macroblock(SilenceBlock(5.0), 5);
+for (int i = 0; i < 5; i++) {
+    myScene.render_microblock();
+}
+```
+</CodeGroup>
+
+<Tip>
+  When you only need a holding shot with no animation, a single
+  `render_microblock()` call after `SilenceBlock` is sufficient — no loop
+  required.
+</Tip>
+
+---
+
+## `FileBlock`
+
+`FileBlock` represents a narrated segment whose audio is read from a pre-recorded `.wav` file. SwapTube derives the filename automatically from the subtitle text by replacing spaces with underscores and stripping all non-alphanumeric characters (via `sanitize_filename()`), then appending `.wav`. The same text is written as a subtitle entry and added to `record_list.tsv` so that `record_audios.py` can prompt you to record it.
+
+```cpp cpp
+FileBlock(const string& subtitle_text);
+```
+
+<ParamField path="subtitle_text" type="const string&" required>
+  The spoken line exactly as it should appear in the subtitle track. SwapTube derives
+  the `.wav` filename from this text: spaces become underscores, all
+  non-alphanumeric characters other than underscores are removed, and `.wav` is
+  appended. For example, `"Hello, world!"` resolves to `Hello_world.wav`.
+</ParamField>
+
+<Note>
+  During a smoketest, `write_shtooka()` is called on every `FileBlock` to populate
+  `record_list.tsv`. This means you can run a smoketest alone (with `./go.sh
+  MyProject 640 360 30 -s`) to regenerate the recording list without performing a
+  full render.
+</Note>
+
+<CodeGroup>
+```cpp Single narrated line
+stage_macroblock(FileBlock("The Mandelbrot set is defined by a simple recurrence."));
+mandelbrotScene.render_microblock();
+```
+
+```cpp Narrated line with multiple microblocks
+// Animate a zoom over the duration of one spoken sentence.
+stage_macroblock(FileBlock("As we zoom in, self-similar structures appear."));
+mandelbrotScene.render_microblock(); // first half: static view
+mandelbrotScene.manager.transition(MICRO, "zoom", "10");
+mandelbrotScene.render_microblock(); // second half: zooming
+```
+</CodeGroup>
+
+---
+
+## `GeneratedBlock`
+
+`GeneratedBlock` lets you supply audio as raw 32-bit PCM sample buffers rather than reading from a file. Both the left and right channels must be provided as `std::vector<int32_t>` of identical length; mismatched sizes throw `std::invalid_argument`. SwapTube automatically adds a `"[Computer Generated Sound]"` subtitle entry for the duration of the block.
+
+```cpp cpp
+GeneratedBlock(const vector<int32_t>& leftBuffer,
+               const vector<int32_t>& rightBuffer);
+```
+
+<ParamField path="leftBuffer" type="const vector<int32_t>&" required>
+  PCM samples for the left audio channel. The number of samples divided by the
+  configured sample rate determines the block's duration in seconds.
+</ParamField>
+
+<ParamField path="rightBuffer" type="const vector<int32_t>&" required>
+  PCM samples for the right audio channel. Must be the same length as
+  `leftBuffer`; a size mismatch throws `std::invalid_argument`.
+</ParamField>
+
+<CodeGroup>
+```cpp Sine-wave tone
+#include <cmath>
+#include <vector>
+
+const int samplerate = 48000;
+const double frequency = 440.0; // A4
+const double duration  = 2.0;   // seconds
+const int    numSamples = static_cast<int>(samplerate * duration);
+
+vector<int32_t> left(numSamples), right(numSamples);
+for (int i = 0; i < numSamples; i++) {
+    int32_t sample = static_cast<int32_t>(
+        0.5 * INT32_MAX * sin(2.0 * M_PI * frequency * i / samplerate)
+    );
+    left[i]  = sample;
+    right[i] = sample;
+}
+
+stage_macroblock(GeneratedBlock(left, right));
+myScene.render_microblock();
+```
+
+```cpp Stereo sweep
+// Opposite-phase sine sweeps for a panning effect.
+for (int i = 0; i < numSamples; i++) {
+    double phase = 2.0 * M_PI * frequency * i / samplerate;
+    left[i]  =  static_cast<int32_t>(0.4 * INT32_MAX * sin(phase));
+    right[i] = -static_cast<int32_t>(0.4 * INT32_MAX * sin(phase));
+}
+
+stage_macroblock(GeneratedBlock(left, right), 3);
+for (int i = 0; i < 3; i++) myScene.render_microblock();
+```
+</CodeGroup>
+
+<Warning>
+  `leftBuffer` and `rightBuffer` are copied into the block at construction time,
+  so they may safely go out of scope after the constructor returns. However, ensure
+  both vectors are fully populated before passing them — partial initialization
+  produces distorted or silent audio.
+</Warning>
+
+---
+
+## `CompositeBlock`
+
+`CompositeBlock` concatenates two existing Macroblocks into a single logical block. The two child blocks are written to the audio stream back-to-back, and their frame durations are summed. `write_shtooka()` is forwarded to both children so that `FileBlock` children still populate `record_list.tsv` correctly.
+
+```cpp cpp
+CompositeBlock(const Macroblock& a, const Macroblock& b);
+```
+
+<ParamField path="a" type="const Macroblock&" required>
+  The first child block. Written first in both the audio stream and the subtitle
+  track.
+</ParamField>
+
+<ParamField path="b" type="const Macroblock&" required>
+  The second child block. Appended immediately after `a` completes.
+</ParamField>
+
+<Warning>
+  `CompositeBlock` stores its children **by reference**. Both `a` and `b` must
+  remain alive for the entire lifetime of the `CompositeBlock`. Do not pass
+  temporaries without binding them to named variables first.
+</Warning>
+
+<CodeGroup>
+```cpp Silence then narration
+// Lead-in silence followed by a narrated line, treated as one macroblock.
+SilenceBlock  lead(0.5);
+FileBlock     line("Now the interesting part begins.");
+CompositeBlock block(lead, line);
+
+stage_macroblock(block);
+myScene.render_microblock();
+```
+
+```cpp TimelineDemo pattern
+// From TimelineDemo.cpp: a 5-second + 1-second composite over 5 microblocks.
+stage_macroblock(CompositeBlock(SilenceBlock(5), SilenceBlock(1)), 5);
+for (int i = 0; i < 5; i++) sss.render_microblock();
+```
+
+```cpp Nested composite
+// Composites can be nested to chain three or more blocks.
+SilenceBlock  intro(1.0);
+FileBlock     body("This is the main explanation.");
+SilenceBlock  outro(0.5);
+
+CompositeBlock first(intro, body);
+CompositeBlock full(first, outro);
+
+stage_macroblock(full, 3);
+for (int i = 0; i < 3; i++) myScene.render_microblock();
+```
+</CodeGroup>
+
+<Tip>
+  The total number of microblocks for a `CompositeBlock` spans the combined audio
+  duration of both children. Use the two-argument `stage_macroblock(block, n)`
+  overload to set an exact microblock count when the default smoketest inference
+  doesn't give you the granularity you want.
+</Tip>
+
+---
+
+## `finalize_macroblock_sequence()`
+
+`finalize_macroblock_sequence()` must be called at the end of `render_video()` to flush and validate the timeline. In a full render it checks that the last macroblock's microblocks were all consumed; in a smoketest it closes the final open macroblock entry and writes the plan file.
+
+```cpp cpp
+void finalize_macroblock_sequence();
+```
+
+<Note>
+  `Main.cpp` calls `finalize_timeline_plan()` after `render_video()` returns.
+  `finalize_macroblock_sequence()` is the user-facing wrapper that also handles
+  the smoketest deferred-close logic. In practice you rarely need to call this
+  directly — `Main.cpp` manages it — but it is available if you are authoring a
+  custom entry point.
+</Note>

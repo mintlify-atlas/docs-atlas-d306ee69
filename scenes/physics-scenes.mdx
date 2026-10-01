@@ -1,0 +1,218 @@
+---
+title: "Physics Scenes: Pendulums, Ropes, and Grid Simulations"
+sidebarTitle: "Physics Scenes"
+description: "Reference for SwapTube's GPU-accelerated physics simulation scenes: PendulumScene, RopeScene, PendulumGridScene, and MovingPendulumGridScene."
+---
+
+Physics scenes simulate continuous mechanical systems — double pendulums, rope chains, and grids of pendulums — and render their evolving state frame-by-frame. Unlike purely mathematical scenes that evaluate static formulas, physics scenes integrate equations of motion across time during `change_data()`, accumulating trajectory history into a path buffer that is composited with the live state each frame. All simulation work runs on the GPU or CPU-side data structures that are uploaded each frame, making even large grids of independent pendulums tractable at video frame rates.
+
+---
+
+## `PendulumScene`
+
+**Header:** `src/Scenes/Physics/PendulumScene.h`  
+**Inherits:** `Scene`
+
+`PendulumScene` simulates a **double pendulum** — two rigid rods joined end-to-end — and renders its trajectory as a glowing path that accumulates over time. The simulation also generates stereo audio output synchronized to the pendulum's kinetic energy, creating an immersive physical experience where you can "hear" the chaos.
+
+### Constructor
+
+```cpp
+PendulumScene(PendulumState s, const vec2& dimensions = vec2(1, 1));
+```
+
+`PendulumState` encodes the initial conditions of the double pendulum as four values: `{angle1, angle2, velocity1, velocity2}`.
+
+```cpp
+// Pendulum starting at θ₁=0.5 rad, θ₂=1.2 rad, both at rest
+PendulumScene ps({0.5, 1.2, 0, 0});
+```
+
+### Public Members
+
+```cpp
+int alpha_subtract = 2;   // Controls how quickly the path trail fades
+Pendulum pend;            // Direct access to the underlying pendulum state
+```
+
+### Audio Generation
+
+The scene integrates audio synthesis directly:
+
+```cpp
+// Generate audio for a given duration and append to sample buffers
+void generate_audio(
+    double duration,
+    vector<sample_t>& left,
+    vector<sample_t>& right,
+    double volume_mult = 1
+);
+```
+
+Audio is generated automatically by `draw()` — you do not need to call `generate_audio()` manually in normal usage. The tone frequency tracks the pendulum's instantaneous kinetic energy.
+
+### Worked Example — `PendulumDemo`
+
+```cpp
+#include "Scenes/Physics/PendulumScene.h"
+
+void render_video() {
+    // Initial state: θ₁=0.5 rad, θ₂=1.2 rad, zero velocity
+    PendulumScene ps({0.5, 1.2, 0, 0});
+
+    stage_macroblock(SilenceBlock(10), 1);
+    ps.render_microblock();
+}
+```
+
+<Note>
+  A single microblock spanning the full 10-second macroblock is enough to observe significant chaotic divergence from the initial conditions. Try varying the initial angles by tiny amounts and comparing the resulting trajectories.
+</Note>
+
+---
+
+## `RopeScene`
+
+**Header:** `src/Scenes/Physics/RopeScene.h`  
+**Inherits:** `CoordinateScene → Scene`
+
+`RopeScene` simulates a **mass-spring rope** — a chain of point masses connected by elastic segments — loaded from a configuration file. The rope can be pinned at arbitrary points, creating hanging, stretched, or oscillating configurations. The viewport is inherited from `CoordinateScene` (`center_x`, `center_y`, `zoom`, `ticks_opacity`).
+
+### Constructor
+
+```cpp
+RopeScene(const string file_name, const vec2& dimensions = vec2(1, 1));
+```
+
+`file_name` is the path to a configuration file that specifies the rope's initial shape, mass density, spring constants, and damping.
+
+### Pin Management
+
+```cpp
+// Pin the rope to a fixed world-space position
+void add_pin(vec2 pos);
+
+// Remove a pin by index (0-based)
+void remove_pin(int pin_index);
+
+Rope rope;  // Direct access to the underlying rope simulation object
+```
+
+### Typical Usage
+
+```cpp
+#include "Scenes/Physics/RopeScene.h"
+#include "Scenes/Common/CompositeScene.h"
+
+CompositeScene cs;
+auto rope = make_shared<RopeScene>("../configs/catenary");
+rope->add_pin(vec2(-0.5, 0.8));
+rope->add_pin(vec2( 0.5, 0.8));
+cs.add_scene(rope, "rope");
+```
+
+---
+
+## `PendulumGridScene`
+
+**Header:** `src/Scenes/Physics/PendulumGridScene.h`  
+**Inherits:** `CoordinateScene → Scene`
+
+`PendulumGridScene` renders a 2-D grid of independent double pendulums simultaneously, where each cell of the grid starts with slightly different initial conditions. This makes the fractal basin boundaries of chaotic versus periodic behavior immediately visible as color patterns. Optionally, the scene can display momentum phase-space instead of position space.
+
+### Constructor
+
+```cpp
+PendulumGridScene(
+    const vector<PendulumGrid>& pgv,
+    const vec2& dimensions = vec2(1, 1)
+);
+```
+
+Each `PendulumGrid` in `pgv` specifies a sub-grid of pendulums with shared parameters (angle ranges, grid resolution). Multiple grids can be superimposed.
+
+### Public Members
+
+```cpp
+bool momentum_mode = false;   // If true, color encodes momentum rather than position
+```
+
+### Key Methods
+
+```cpp
+void draw_grid();              // Render all pendulum cells (called by draw())
+void draw_pendulum_trail();    // Overlay the trajectory of a single selected pendulum
+```
+
+---
+
+## `MovingPendulumGridScene`
+
+**Header:** `src/Scenes/Physics/MovingPendulumGridScene.h`  
+**Inherits:** `CoordinateScene → Scene`
+
+`MovingPendulumGridScene` extends the grid concept with a viewport that moves through the initial-condition phase space over time, creating a "flythrough" of the fractal boundary. Camera movement is controlled via the inherited `CoordinateScene` state variables (`center_x`, `center_y`, `zoom`), so the viewport can be animated with smooth `manager.transition(...)` calls.
+
+### Constructor
+
+```cpp
+MovingPendulumGridScene(const vec2& dimensions = vec2(1, 1));
+```
+
+### Key Methods
+
+```cpp
+void draw_grid();   // Render all pendulum cells for the current viewport
+void draw() override;
+```
+
+### Example — Zooming into the Phase Space Boundary
+
+```cpp
+#include "Scenes/Physics/MovingPendulumGridScene.h"
+
+void render_video() {
+    MovingPendulumGridScene gs;
+
+    stage_macroblock(SilenceBlock(8), 2);
+
+    // Start zoomed out
+    gs.manager.set("zoom", "-1");
+
+    gs.render_microblock();
+
+    // Zoom in on the chaotic boundary
+    gs.manager.transition(MICRO, "center_x", ".12");
+    gs.manager.transition(MICRO, "center_y", "-.08");
+    gs.manager.transition(MICRO, "zoom",     "2");
+
+    gs.render_microblock();
+}
+```
+
+---
+
+## Physics and GPU Acceleration
+
+<Tabs>
+  <Tab title="How simulation runs">
+    Each physics scene's `change_data()` method is called once per frame (inside `update()`), before `draw()`. This is where time integration happens — ODE stepping for the pendulums, Verlet integration for the rope. The simulation state is stored in CPU-side data structures (`Pendulum`, `Rope`, `PendulumGrid`) and the rendered output is produced by a CUDA kernel that maps simulation state to pixel colors.
+  </Tab>
+  <Tab title="Path accumulation">
+    `PendulumScene` maintains a `Pixels path_background` buffer that is preserved between frames. Each frame the CUDA kernel subtracts `alpha_subtract` from every pixel's alpha channel (fading the old path) and then paints the current pendulum tip position. This creates the characteristic glowing trail effect without requiring history replay.
+  </Tab>
+  <Tab title="Grid parallelism">
+    `PendulumGridScene` and `MovingPendulumGridScene` assign one pendulum per screen pixel (or cell). Because each pendulum is fully independent, the grid is embarrassingly parallel and runs as a single CUDA kernel dispatch — even a 1920×1080 grid of pendulums renders in real time.
+  </Tab>
+</Tabs>
+
+---
+
+## Summary Table
+
+| Scene | Header | Constructor key arg | GPU strategy |
+|---|---|---|---|
+| `PendulumScene` | `Physics/PendulumScene.h` | `PendulumState {θ₁, θ₂, ω₁, ω₂}` | CPU ODE integration + GPU path compositing |
+| `RopeScene` | `Physics/RopeScene.h` | `string file_name` | CPU Verlet + GPU pixel upload |
+| `PendulumGridScene` | `Physics/PendulumGridScene.h` | `vector<PendulumGrid>` | Per-pixel parallel CUDA kernel |
+| `MovingPendulumGridScene` | `Physics/MovingPendulumGridScene.h` | _(none)_ | Per-pixel parallel CUDA kernel with animated viewport |
