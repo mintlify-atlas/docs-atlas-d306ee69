@@ -1,5 +1,5 @@
 ---
-title: "Scene System Overview: How SwapTube Renders"
+title: "Scene System Overview: SwapTube Rendering Pipeline"
 sidebarTitle: "Overview"
 description: "A complete guide to SwapTube's scene hierarchy, how scenes are instantiated and rendered per-frame, and how the state system drives every visual parameter."
 ---
@@ -19,7 +19,7 @@ public:
     virtual void draw() = 0;           // Pure virtual — implement your render logic here
 
     void render_microblock();          // Called once per microblock in your project
-    void update();                     // Evaluates state, then calls change_data() + draw()
+    void update();                     // Evaluates state and calls change_data()
     uint32_t* query();                 // Returns the GPU pixel pointer after rendering
 
     StateManager manager;              // Animate any named variable through this

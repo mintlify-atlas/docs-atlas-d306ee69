@@ -184,32 +184,31 @@ SwapTube has no single-command installer — it is a C++ project you clone and b
       </Step>
 
       <Step title="Build the image">
-        Build from the repository root so the Dockerfile can copy the checkout:
+        Clone the repository and build from its **parent directory** — the Dockerfile uses `COPY .. /workspace` so the build context must be the folder that contains the `swaptube/` checkout:
 
         ```bash
         git clone https://github.com/2swap/swaptube.git ~/swaptube
         cd ~/swaptube
-        docker build -f docker/Dockerfile -t swaptube .
+        docker build -f docker/Dockerfile -t swaptube:cuda ..
         ```
 
         The build installs all apt dependencies and compiles MicroTeX (using the Qt backend) inside the image.
       </Step>
 
       <Step title="Run a container">
-        Mount `media/` and `out/` as volumes so your renders and assets persist outside the container:
+        Create a named volume for the build cache, then run the container with GPU access and mount your project assets:
 
         ```bash
-        docker run --gpus all \
-            -v ~/swaptube/media:/workspace/media \
-            -v ~/swaptube/out:/workspace/out \
-            -it swaptube
+        docker volume create swaptube-build
+        docker run --rm -it --gpus all \
+          -u $(id -u):$(id -g) \
+          -v "$PWD:/workspace/swaptube" \
+          -v swaptube-build:/workspace/swaptube/build \
+          -w /workspace/swaptube \
+          swaptube:cuda ./go.sh MandelbrotDemo 640 360 30
         ```
 
-        Inside the container, run projects the same way as on bare metal:
-
-        ```bash
-        ./go.sh MandelbrotDemo 1920 1080 30
-        ```
+        Replace `MandelbrotDemo 640 360 30` with your project name and desired resolution. The `media/` and `build/` directories persist across container runs via the bind mount and named volume respectively.
       </Step>
 
       <Step title="Further reference">

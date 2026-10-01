@@ -40,14 +40,12 @@ void add_scene(
 );
 ```
 
-Adds a child scene to the compositor and registers its transform variables with the `StateManager`. After this call, six state variables are available on the parent `CompositeScene`:
+Adds a child scene to the compositor and registers its transform variables with the `StateManager`. After this call, four state variables are available on the parent `CompositeScene`:
 
 | Variable | Initial value | Meaning |
 |---|---|---|
 | `<state_name>.x` | `pos.x` | Horizontal center as a fraction of the compositor width |
 | `<state_name>.y` | `pos.y` | Vertical center as a fraction of the compositor height |
-| `<state_name>.w` | child `w` | Inherited from the child scene's own `w` state |
-| `<state_name>.h` | child `h` | Inherited from the child scene's own `h` state |
 | `<state_name>.angle` | `0` | Rotation in radians, applied around the center point |
 | `<state_name>.opacity` | `1` | Composite opacity in `[0, 1]` |
 
@@ -153,8 +151,6 @@ When you call `add_scene("ms", ...)`, the following variables are created in the
 | `<name>.y` | `double` | `pos.y` | Vertical center of the child, as a fraction of the compositor height. `0` is the top edge, `1` is the bottom edge. |
 | `<name>.angle` | `double` | `0` | Rotation applied to the child about its center, in radians. |
 | `<name>.opacity` | `double` | `1` | Composite opacity. Values below `0.001` cause the child to be skipped entirely during `draw()`. |
-
-Note: `<name>.w` and `<name>.h` are owned by the child scene's own `StateManager` and are inherited through the parent–child link, not set directly on the compositor.
 
 </Expandable>
 

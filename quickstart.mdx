@@ -39,8 +39,8 @@ Every SwapTube video starts from a single C++ function: `render_video()`. You wr
         ms.manager.transition(MICRO, {
             {"pixel_param_z", "1"},
             {"pixel_param_c", "0"},
-            {"seed_c_r",      ".4"},
-            {"seed_c_i",      ".1"},
+            {"seed_c_r", ".4"},
+            {"seed_c_i", ".1"},
         });
 
         // Stage a 4-second silence macroblock with exactly 2 microblocks.
@@ -159,10 +159,10 @@ Every SwapTube video starts from a single C++ function: `render_video()`. You wr
 
     ```
     out/MyFirstVideo/2025-01-15_14.32.07/
-    ├── output.mp4               # The finished video
-    ├── output.srt               # Subtitle file (populated from FileBlock text)
+    ├── Video.mkv                # The finished video
+    ├── Video.srt                # Subtitle file (populated from FileBlock text)
     ├── microblock_counts.txt    # Recorded by the smoketest; used by the render
-    ├── frames/                  # Individual PNG frames (written during render)
+    ├── frames/                  # Individual PNG frames (one per microblock during smoketest)
     ├── data/                    # Numeric data tables for gnuplot
     └── plots/                   # Generated debug plots
     ```
@@ -188,8 +188,8 @@ void render_video() {
     ms.manager.transition(MICRO, {
         {"pixel_param_z", "1"},
         {"pixel_param_c", "0"},
-        {"seed_c_r",      ".4"},
-        {"seed_c_i",      ".1"},
+        {"seed_c_r", ".4"},
+        {"seed_c_i", ".1"},
     });
     stage_macroblock(SilenceBlock(4), 2);
     ms.render_microblock();

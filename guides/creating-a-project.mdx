@@ -203,6 +203,16 @@ Add `-s` to run only the smoketest and skip the full render:
 This is useful for quickly validating new macroblock sequences or refreshing `record_list.tsv` without waiting for a full encode.
 </Tip>
 
+<Tip>
+On AMD GPU machines, pass `-c HIP` to compile with HIP/ROCm instead of CUDA:
+
+```bash
+./go.sh MyProject 1920 1080 30 -c HIP
+```
+
+On NVIDIA machines, `-c CUDA` is the default and does not need to be specified explicitly.
+</Tip>
+
 ## Adding a second scene
 
 Projects routinely use `CompositeScene` to layer or place multiple scenes in the same frame. Include both headers, create a `CompositeScene`, and add child scenes as shared pointers:

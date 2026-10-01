@@ -1,5 +1,5 @@
 ---
-title: "Global State Variables and set_global_state()"
+title: "Global State: Built-in Variables and API Reference"
 sidebarTitle: "Global State"
 description: "Reference for SwapTube's built-in global state sensors — time, frame progress, voice, resolution — and the TransitionType enum and set_global_state()."
 ---
@@ -157,6 +157,14 @@ other_scene.manager.set("indicator_y", "{billiards_ball_y}");
 ## Additional Global State Functions
 
 These companion free functions in `GlobalState.h` round out the global state API:
+
+<ResponseField name="print_global_state()" type="void">
+  Prints all key-value pairs in the global state table to `stdout`, bracketed by `=====GLOBAL STATE=====` / `======================` headers. Useful for debugging when a global state access fails.
+
+  ```cpp
+  print_global_state();
+  ```
+</ResponseField>
 
 <ResponseField name="get_global_state(key)" type="double">
   Reads a value from the global state table. Returns `0.0` on the first frame if the key is absent; throws on later frames.

@@ -1,5 +1,5 @@
 ---
-title: "StateManager: Variable Equations & Transitions"
+title: "StateManager: RPN Variable Equations & Transitions"
 sidebarTitle: "State Manager"
 description: "Full API reference for StateManager — the DAG-based variable engine driving per-frame scene parameters, transitions, and parent-child state in SwapTube."
 ---
@@ -55,8 +55,8 @@ Equations follow standard stack-based RPN evaluation. Tokens are pushed onto a s
 ```
 
 ```text Bezier
-// 5-argument bezier: start, ctrl1, ctrl2, ctrl3(?), end, fraction
-"0 0.25 0.75 0.9 1 {macroblock_fraction} bezier"
+// 5-argument bezier: p0 p1 p2 p3 t (4 control points + fraction)
+"0 0.25 0.75 1 {macroblock_fraction} bezier"
 ```
 
 </CodeGroup>

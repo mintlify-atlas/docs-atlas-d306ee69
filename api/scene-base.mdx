@@ -58,6 +58,14 @@ In smoketest mode `render_microblock()` renders exactly one frame and records th
   `render_microblock()` will throw a `std::runtime_error` if it is called without a preceding `stage_macroblock()`, or if more microblocks are rendered than were declared in the macroblock.
 </Warning>
 
+### `update_state()`
+
+```cpp
+void update_state();
+```
+
+Evaluates all `StateManager` expressions for the current frame and refreshes the protected `state` snapshot. Also flushes any pending `stage_publish_to_global` entries to the global state table. Called twice per `update()` cycle (once before and once after `change_data()`). Can be called manually when you need an up-to-date `state` snapshot before the normal lifecycle fires.
+
 ### `update()`
 
 ```cpp
@@ -134,6 +142,18 @@ Returns the geometric mean of the scene's pixel dimensions: `sqrt(width * height
   Geometric mean of width and height in pixels.
 </ResponseField>
 
+### `get_pixels_size()`
+
+```cpp
+int get_pixels_size();
+```
+
+Returns the total number of pixels in the scene's buffer (`width * height`). Also prints the computed dimensions to `stdout`. Primarily used internally for buffer allocation checks.
+
+<ResponseField name="return" type="int">
+  Total pixel count: `get_width() * get_height()`.
+</ResponseField>
+
 ---
 
 ## I/O
@@ -177,6 +197,22 @@ unordered_map<string, string> stage_publish_to_global;
 ```
 
 An optional mapping from local state variable names to global state variable names. After each `update_state()` call, every entry in this map is written to the global state. This allows a scene to broadcast values (such as the current camera position) for consumption by other scenes or the MIDI writer.
+
+---
+
+## Transition Methods
+
+### `on_end_transition()`
+
+```cpp
+void on_end_transition(const TransitionType tt);
+```
+
+Closes all in-flight transitions of the given type on the scene's `StateManager` by calling `manager.close_transitions(tt)`, then invokes `on_end_transition_extra_behavior(tt)`. Microblock transitions are always closed regardless of `tt`; macro transitions are only closed when `tt == MACRO`. Called automatically by `render_microblock()` at the end of each microblock (and at macroblock completion). Can be called manually if you need to snap transitions early.
+
+<ParamField path="tt" type="TransitionType" required>
+  `MICRO` closes microblock-scope transitions only; `MACRO` closes both macroblock-scope and microblock-scope transitions.
+</ParamField>
 
 ---
 

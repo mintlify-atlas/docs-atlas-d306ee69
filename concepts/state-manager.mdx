@@ -30,7 +30,6 @@ These are managed automatically by the render loop and are always available:
 | `{macroblock_fraction}` | Progress through the current Macroblock (0 → 1) |
 | `{microblock_fraction}` | Progress through the current Microblock (0 → 1) |
 | `{voice}` | Loudness of the voice track for this frame (max L-channel sample as float) |
-| `{VIDEO_WIDTH}` / `{VIDEO_HEIGHT}` | Pixel dimensions of the output video |
 
 ## RPN Equation Syntax
 
@@ -49,7 +48,8 @@ Constant numbers (e.g. `.5`, `3.14`, `-1`) are pushed onto the evaluation stack.
 | Token | Arity | Description |
 |---|---|---|
 | `+` `-` `*` `/` `^` `%` | 2 | Arithmetic |
-| `sin` `cos` `atan2` | 1 or 2 | Trigonometry |
+| `sin` `cos` | 1 | Trigonometry (unary) |
+| `atan2` | 2 | Two-argument arctangent |
 | `exp` `sqrt` `abs` `log` | 1 | Common math |
 | `floor` `ceil` `^2` | 1 | Rounding / squaring |
 | `pi` `e` `phi` | 0 | Mathematical constants |

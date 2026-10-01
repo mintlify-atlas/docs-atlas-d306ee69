@@ -21,10 +21,10 @@ Physics scenes simulate continuous mechanical systems — double pendulums, rope
 PendulumScene(PendulumState s, const vec2& dimensions = vec2(1, 1));
 ```
 
-`PendulumState` encodes the initial conditions of the double pendulum as four values: `{angle1, angle2, velocity1, velocity2}`.
+`PendulumState` encodes the initial conditions of the double pendulum as four values: `{theta1, theta2, p1, p2}` — the two arm angles and their conjugate momenta.
 
 ```cpp
-// Pendulum starting at θ₁=0.5 rad, θ₂=1.2 rad, both at rest
+// Pendulum starting at θ₁=0.5 rad, θ₂=1.2 rad, both at rest (zero momenta)
 PendulumScene ps({0.5, 1.2, 0, 0});
 ```
 
@@ -57,7 +57,7 @@ Audio is generated automatically by `draw()` — you do not need to call `genera
 #include "Scenes/Physics/PendulumScene.h"
 
 void render_video() {
-    // Initial state: θ₁=0.5 rad, θ₂=1.2 rad, zero velocity
+    // Initial state: θ₁=0.5 rad, θ₂=1.2 rad, zero momenta
     PendulumScene ps({0.5, 1.2, 0, 0});
 
     stage_macroblock(SilenceBlock(10), 1);
@@ -212,7 +212,7 @@ void render_video() {
 
 | Scene | Header | Constructor key arg | GPU strategy |
 |---|---|---|---|
-| `PendulumScene` | `Physics/PendulumScene.h` | `PendulumState {θ₁, θ₂, ω₁, ω₂}` | CPU ODE integration + GPU path compositing |
+| `PendulumScene` | `Physics/PendulumScene.h` | `PendulumState {θ₁, θ₂, p₁, p₂}` | CPU ODE integration + GPU path compositing |
 | `RopeScene` | `Physics/RopeScene.h` | `string file_name` | CPU Verlet + GPU pixel upload |
 | `PendulumGridScene` | `Physics/PendulumGridScene.h` | `vector<PendulumGrid>` | Per-pixel parallel CUDA kernel |
 | `MovingPendulumGridScene` | `Physics/MovingPendulumGridScene.h` | _(none)_ | Per-pixel parallel CUDA kernel with animated viewport |

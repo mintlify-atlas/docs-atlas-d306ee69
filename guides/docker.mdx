@@ -27,7 +27,7 @@ If `nvidia-smi` reports your GPU model and driver version, the toolkit is workin
 
 ## TLDR workflow
 
-The full workflow from the `docker/README.md` is reproduced here exactly:
+The full workflow from the `docker/README.md` is reproduced here with the required framerate argument added:
 
 ```bash
 docker build -f docker/Dockerfile -t swaptube:cuda ..
@@ -37,7 +37,7 @@ docker run --rm -it --gpus all \
   -v "$PWD:/workspace/swaptube" \
   -v swaptube-build:/workspace/swaptube/build \
   -w /workspace/swaptube \
-  swaptube:cuda ./go.sh MyProject 640 360
+  swaptube:cuda ./go.sh MyProject 640 360 30
 ```
 
 Run all three commands from the **root of your SwapTube checkout** (the directory that contains `go.sh`).
@@ -68,7 +68,7 @@ Run all three commands from the **root of your SwapTube checkout** (the director
       -v "$PWD:/workspace/swaptube" \
       -v swaptube-build:/workspace/swaptube/build \
       -w /workspace/swaptube \
-      swaptube:cuda ./go.sh MyProject 640 360
+      swaptube:cuda ./go.sh MyProject 640 360 30
     ```
 
     Key flags explained:

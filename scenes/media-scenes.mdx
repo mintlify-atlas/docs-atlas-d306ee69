@@ -171,13 +171,23 @@ WhitePaperScene(
 **Header:** `src/Scenes/Media/CursorScene.h`  
 **Inherits:** `Scene`
 
-`CursorScene` renders a mouse cursor overlay — useful for tutorial-style videos where you want to show a cursor pointing at elements. All visual parameters (cursor position, visibility, style) are controlled through `manager`.
+`CursorScene` renders a mouse cursor overlay — useful for tutorial-style videos where you want to show a cursor pointing at elements. Position, size, and fill/stroke colors are all controlled through `manager`.
 
 ### Constructor
 
 ```cpp
 CursorScene(const vec2& dimensions = vec2(1, 1));
 ```
+
+### State Variables
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `cursor_x` | `0.5` | Horizontal cursor position as a fraction of scene width |
+| `cursor_y` | `0.5` | Vertical cursor position as a fraction of scene height |
+| `cursor_size` | `0.1` | Cursor size as a fraction of scene height |
+| `fill_r`, `fill_g`, `fill_b` | `255, 255, 255` | RGB fill color of the cursor arrow |
+| `stroke_r`, `stroke_g`, `stroke_b` | `0, 0, 68` | RGB stroke/outline color of the cursor arrow |
 
 ### Typical Usage
 
@@ -249,6 +259,13 @@ cs.add_scene(slider, "slider", vec2(0.15, 0.9));
 ```cpp
 MidiSoundScene(const vec2& dimensions = vec2(1, 1));
 ```
+
+### State Variables
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `drone_frequency` | `220` | Continuous drone pitch in Hz |
+| `drone_volume` | `0` | Continuous drone volume (0 = silent, 1 = full) |
 
 ### Playing Notes
 

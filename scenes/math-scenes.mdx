@@ -1,5 +1,5 @@
 ---
-title: "Math Scenes: Fractals, Graphs, Algebra, and More"
+title: "Math Scenes: Fractals, Graphs, Algebra, and More in SwapTube"
 sidebarTitle: "Math Scenes"
 description: "Reference for every SwapTube mathematical visualisation scene — from Mandelbrot and Rubik's Cube to force-directed graphs, manifolds, and permutations."
 ---
@@ -17,12 +17,17 @@ SwapTube ships a large library of purpose-built mathematical visualisation scene
 
 Renders the Mandelbrot set (or Julia sets) entirely on the GPU. The scene inherits the full `CoordinateScene` viewport (`center_x`, `center_y`, `zoom`) and adds fractal-specific parameters.
 
-| State variable | Meaning |
-|---|---|
-| `pixel_param_z` | Weight of the pixel coordinate in the `z` seed (0 = fixed `z`, 1 = pixel as `z`) |
-| `pixel_param_c` | Weight of the pixel coordinate in the `c` seed (0 = fixed `c`, 1 = pixel as `c`) |
-| `seed_c_r` | Real part of the fixed `c` seed when `pixel_param_c` is 0 |
-| `seed_c_i` | Imaginary part of the fixed `c` seed |
+| State variable | Default | Meaning |
+|---|---|---|
+| `pixel_param_z` | `0` | Weight of the pixel coordinate in the `z` seed (0 = fixed `z`, 1 = pixel as `z`) |
+| `pixel_param_x` | `0` | Weight of the pixel coordinate in the `x` seed (used for X-set variants) |
+| `pixel_param_c` | `1` | Weight of the pixel coordinate in the `c` seed (0 = fixed `c`, 1 = pixel as `c`; default = Mandelbrot) |
+| `seed_z_r`, `seed_z_i` | `0, 0` | Real and imaginary parts of the fixed `z` seed |
+| `seed_x_r`, `seed_x_i` | `2, 0` | Real and imaginary parts of the fixed `x` seed |
+| `seed_c_r`, `seed_c_i` | `0, 0` | Real and imaginary parts of the fixed `c` seed |
+| `max_iterations` | `200` | Maximum iteration count before a point is considered inside the set |
+| `gradation` | `1` | Controls color banding width |
+| `phase_shift` | `{t}` | Time-based color phase offset for animated coloring |
 
 ```cpp
 #include "Scenes/Math/MandelbrotScene.h"
@@ -135,10 +140,10 @@ A 3-D volumetric fractal renderer using GPU ray-casting.
 #### `Graph` API
 
 ```cpp
-// Add a node with a numeric hash as its unique ID
+// Add a node with a numeric hash as its unique ID (returns the hash)
 graph.add_node(double hash);
 
-// Add a directed edge between two node IDs
+// Add a bidirectional edge between two node IDs
 graph.add_edge(double from, double to, double opacity = 1);
 
 // Remove an edge
@@ -292,8 +297,8 @@ void add_manifold(
     const string& x_eq,    // RPN equation for x(u,v)
     const string& y_eq,    // RPN equation for y(u,v)
     const string& z_eq,    // RPN equation for z(u,v)
-    const string& r_eq,    // RPN equation for red channel
-    const string& i_eq,    // RPN equation for green channel
+    const string& r_eq,    // RPN equation for the real part of the complex color value
+    const string& i_eq,    // RPN equation for the imaginary part of the complex color value
     const string& u_min, const string& u_max, const string& u_steps,
     const string& v_min, const string& v_max, const string& v_steps
 );

@@ -47,13 +47,12 @@ If you need to override the detected backend, pass `-c CUDA` or `-c HIP` to `go.
 
 A **Scene** is the fundamental rendering unit. Each scene owns a pixel buffer on the GPU, a `StateManager`, and a `draw()` implementation. SwapTube ships with a rich library of built-in scenes organised under `src/Scenes/`:
 
-| Category | Example Scenes |
+| Category | Scenes |
 |---|---|
-| **Math** | `MandelbrotScene`, `MandelbulbScene`, `RootFractalScene`, `VolumetricFractalScene`, `RealFunctionScene` |
-| **Geometry / Algebra** | `GeometryScene`, `ThreeDAlgebraScene`, `TwoDAlgebraScene`, `GraphScene`, `GeodesicScene` |
-| **Physics** | `PendulumScene`, `ManifoldScene`, `OuterBilliardsScene` |
-| **Media** | `LatexScene`, `PngScene` |
-| **Common** | `CompositeScene`, `BackgroundScene`, `CoordinateScene` |
+| **Math** | `MandelbrotScene`, `MandelbulbScene`, `RootFractalScene`, `VolumetricFractalScene`, `RealFunctionScene`, `Fractal2DScene`, `GeometryScene`, `GeodesicScene`, `GraphScene`, `ThreeDAlgebraScene`, `TwoDAlgebraScene`, `ConwayScene`, `ManifoldScene`, `OuterBilliardsScene`, `OuterBilliardsVertexFlowScene`, `InnerBilliardsScene`, `PermutationScene`, `RubiksScene`, `RubiksGraphScene`, `MultiplicationTableScene`, `FourDAlgebraScene`, `FourDPlaneScene`, `FourDVerseScene` |
+| **Physics** | `PendulumScene`, `MovingPendulumGridScene`, `RopeScene` |
+| **Media** | `LatexScene`, `PngScene`, `Mp4Scene`, `MidiSoundScene`, `WhitePaperScene`, `CursorScene`, `StateSliderScene` |
+| **Common** | `CompositeScene`, `BackgroundScene`, `CoordinateScene`, `SuperScene`, `ThreeDimensionScene` |
 
 `CompositeScene` is the workhorse for multi-element layouts: it holds a collection of child scenes and manages each one's position, opacity, and rotation through the parent state manager. Child scenes can be added at any time during `render_video()` and their on-screen properties animated independently.
 
@@ -92,6 +91,7 @@ SwapTube organises time in two layers:
 - `FileBlock("narration text")` — derives a `.wav` filename from the subtitle text and writes an entry to `record_list.tsv` so you can record narration later with `record_audios.py`.
 - `SilenceBlock(duration_seconds)` — inserts a silent gap of the given length.
 - `GeneratedBlock(leftBuffer, rightBuffer)` — uses a pair of pre-computed `int32_t` sample arrays as the audio track.
+- `CompositeBlock(a, b)` — combines two macroblocks so their audio tracks play simultaneously as a single macroblock.
 
 A macroblock is _staged_ globally, then the scene renders one or more **microblocks**:
 
@@ -132,12 +132,13 @@ set_for_real(true);
 ```text
 swaptube/
 ├── src/
-│   ├── Core/          # Main loop, macroblock types, StateManager, smoketest logic
-│   ├── Scenes/        # Built-in scene library (Math, Physics, Common, Media)
-│   ├── CUDA/          # GPU kernels — canonical source for both CUDA and HIP builds
-│   ├── DataObjects/   # Domain objects (graphs, grids, pendulums, Rubik's cubes, …)
-│   ├── IO/            # FFmpeg writer, audio writer, PNG loader, LaTeX converter
-│   └── Projects/      # Your project files live here; Demos/ has working examples
+│   ├── Core/                # Main loop, macroblock types, StateManager, smoketest logic
+│   ├── Scenes/              # Built-in scene library (Math, Physics, Common, Media)
+│   ├── CUDA/                # GPU kernels — canonical source for both CUDA and HIP builds
+│   ├── DataObjects/         # Domain objects (graphs, grids, pendulums, Rubik's cubes, …)
+│   ├── Host_Device_Shared/  # Headers shared between CPU and GPU translation units
+│   ├── IO/                  # FFmpeg writer, audio writer, PNG loader, LaTeX converter
+│   └── Projects/            # Your project files live here; Demos/ has working examples
 ├── out/               # Rendered output, organised by project and timestamp
 ├── media/             # Input assets: recorded .wav files, source PNGs, LaTeX cache
 ├── build/             # CMake / Ninja artefacts and compiled binary

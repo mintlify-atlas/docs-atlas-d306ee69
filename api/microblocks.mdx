@@ -215,11 +215,11 @@ void render_video() {
 }
 ```
 
-`StateSliderScene` takes four constructor arguments: the name of the global state variable to track, a display label (LaTeX is accepted), and the minimum and maximum values of the slider range.
+`StateSliderScene` takes four constructor arguments: a state expression whose value drives the slider position (can be a bare global variable reference such as `"{microblock_fraction}"` or any RPN expression accepted by `StateManager`), a display label (LaTeX is accepted), and the minimum and maximum values of the slider range. Internally the expression is registered via `manager.set("value", vn)`, so any valid state expression is accepted — not just a plain variable name.
 
 ```cpp cpp
-StateSliderScene(const string& variable_name,
-                 const string& display_name,
+StateSliderScene(const string& vn,
+                 const string& dn,
                  double min_val,
                  double max_val,
                  const vec2& dimensions = vec2(1, 1));

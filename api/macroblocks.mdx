@@ -267,9 +267,12 @@ void finalize_macroblock_sequence();
 ```
 
 <Note>
-  `Main.cpp` calls `finalize_timeline_plan()` after `render_video()` returns.
-  `finalize_macroblock_sequence()` is the user-facing wrapper that also handles
-  the smoketest deferred-close logic. In practice you rarely need to call this
-  directly — `Main.cpp` manages it — but it is available if you are authoring a
-  custom entry point.
+  The standard `Main.cpp` entry point calls `finalize_timeline_plan()` directly
+  after `render_video()` returns — it does **not** call
+  `finalize_macroblock_sequence()`. `finalize_macroblock_sequence()` is the
+  higher-level wrapper that also handles the smoketest deferred-close logic
+  (closing the last open macroblock plan entry before delegating to
+  `finalize_timeline_plan()`). Call it explicitly at the end of `render_video()`
+  if you are authoring a custom entry point that needs the full smoketest
+  deferred-close behaviour.
 </Note>
